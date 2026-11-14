@@ -1,0 +1,288 @@
+"""Turn a TowerPro SG90 so its horn points toward the tracked azimuth.
+
+Hardware PWM comes from the Raspberry Pi 5 RP1 PWM0 block through sysfs, which
+needs `dtoverlay=pwm,pin=<gpio>,func=4` in /boot/firmware/config.txt. lgpio's
+software-timed pulses are the fallback; they work, but the horn jitters more.
+"""
+
+from __future__ import annotations
+
+import glob
+import logging
+import math
+import os
+import shutil
+import threading
+import time
+from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+RP1_PWM0 = "1f00098000.pwm"
+HW_PWM_CHANNELS = {12: 0, 13: 1, 18: 2, 19: 3}
+PERIOD_NS = 20_000_000
+SYSFS_PWM = Path("/sys/class/pwm")
+CHANNEL_FILES = ("period", "duty_cycle", "enable", "polarity")
+UPDATE_HZ = 50.0
+REOPEN_S = 5.0
+
+
+class ServoError(Exception):
+    pass
+
+
+def servo_angle_for(azimuth: float, servo: dict) -> float:
+    """Servo angle (0-180, 90 = centre) that points the horn at an array azimuth."""
+    relative = (azimuth - servo["center_azimuth_deg"] + 180.0) % 360.0 - 180.0
+    if abs(relative) > 90.0:
+        if servo["out_of_range"] == "mirror":
+            relative = math.copysign(180.0, relative) - relative
+        else:
+            relative = math.copysign(90.0, relative)
+    return 90.0 + servo["direction"] * relative
+
+
+def pointing_azimuth(angle: float, servo: dict) -> float:
+    return (servo["center_azimuth_deg"] + (angle - 90.0) * servo["direction"]) % 360.0
+
+
+def pulse_us(angle: float, servo: dict) -> float:
+    span = servo["max_pulse_us"] - servo["min_pulse_us"]
+    return servo["min_pulse_us"] + span * max(0.0, min(180.0, angle)) / 180.0
+
+
+def find_pwm_chip() -> Path | None:
+    for chip in sorted(SYSFS_PWM.glob("pwmchip*")):
+        if RP1_PWM0 in os.path.realpath(chip / "device"):
+            return chip
+    return None
+
+
+def export_channel(chip: Path, channel: int, timeout: float = 2.0) -> Path:
+    path = chip / "pwm{}".format(channel)
+    if not path.exists():
+        (chip / "export").write_text(str(channel))
+    deadline = time.monotonic() + timeout
+    while not os.access(path / "duty_cycle", os.W_OK):
+        if time.monotonic() > deadline:
+            raise ServoError("{} is not writable by this user".format(path))
+        time.sleep(0.05)
+    return path
+
+
+class HardwarePwm:
+    name = "hardware PWM"
+
+    def __init__(self, gpio: int):
+        if gpio not in HW_PWM_CHANNELS:
+            raise ServoError("GPIO{} has no RP1 hardware PWM channel (use 12, 13, 18 or 19)".format(gpio))
+        chip = find_pwm_chip()
+        if chip is None:
+            raise ServoError("RP1 PWM0 is not enabled; add dtoverlay=pwm,pin={},func=4 to "
+                             "/boot/firmware/config.txt and reboot".format(gpio))
+        try:
+            self.path = export_channel(chip, HW_PWM_CHANNELS[gpio])
+            self._write("duty_cycle", 0)
+            self._write("period", PERIOD_NS)
+            self._write("enable", 1)
+        except PermissionError as exc:
+            raise ServoError("No permission for {} ({}); run --prepare-hardware as root first".format(chip, exc)) from exc
+
+    def _write(self, name: str, value: int) -> None:
+        (self.path / name).write_text(str(value))
+
+    def pulse(self, microseconds: float) -> None:
+        self._write("duty_cycle", int(microseconds * 1000))
+
+    def release(self) -> None:
+        self._write("duty_cycle", 0)
+
+    def close(self) -> None:
+        self._write("duty_cycle", 0)
+        self._write("enable", 0)
+
+
+def open_header_gpiochip(lgpio):
+    """Pi 5 exposes the 40-pin header as pinctrl-rp1; its gpiochip number depends on the kernel."""
+    for device in sorted(glob.glob("/dev/gpiochip*")):
+        handle = lgpio.gpiochip_open(int(device[len("/dev/gpiochip"):]))
+        label = lgpio.gpio_get_chip_info(handle)[3]
+        if label.startswith("pinctrl-rp1") or label.startswith("pinctrl-bcm"):
+            return handle
+        lgpio.gpiochip_close(handle)
+    raise ServoError("No Raspberry Pi header GPIO chip found")
+
+
+class SoftwarePwm:
+    name = "lgpio software PWM"
+
+    def __init__(self, gpio: int):
+        try:
+            import lgpio
+        except ImportError as exc:
+            raise ServoError("lgpio is not installed (sudo apt install python3-lgpio)") from exc
+        self._lgpio = lgpio
+        self._gpio = gpio
+        self._handle = open_header_gpiochip(lgpio)
+        try:
+            lgpio.gpio_claim_output(self._handle, gpio, 0)
+        except lgpio.error as exc:
+            lgpio.gpiochip_close(self._handle)
+            raise ServoError("Cannot claim GPIO{} ({})".format(gpio, exc)) from exc
+
+    def pulse(self, microseconds: float) -> None:
+        self._lgpio.tx_servo(self._handle, self._gpio, int(microseconds), 50)
+
+    def release(self) -> None:
+        self._lgpio.tx_servo(self._handle, self._gpio, 0)
+
+    def close(self) -> None:
+        self.release()
+        self._lgpio.gpio_free(self._handle, self._gpio)
+        self._lgpio.gpiochip_close(self._handle)
+
+
+def open_driver(servo: dict):
+    backend = servo["backend"]
+    if backend in ("auto", "hardware"):
+        try:
+            return HardwarePwm(servo["gpio"])
+        except (ServoError, OSError) as exc:
+            if backend == "hardware":
+                raise
+            log.warning("Hardware PWM unavailable (%s); falling back to lgpio software pulses", exc)
+    return SoftwarePwm(servo["gpio"])
+
+
+def prepare_hardware(servo: dict, group: str) -> int:
+    """Run as root before the service starts: export the PWM channel and hand it to `group`."""
+    if not servo["enabled"] or servo["backend"] == "software":
+        return 0
+    channel = HW_PWM_CHANNELS.get(servo["gpio"])
+    chip = find_pwm_chip()
+    if channel is None or chip is None:
+        log.warning("Hardware PWM is not available for GPIO%d; the servo will use software pulses", servo["gpio"])
+        return 0
+    try:
+        path = export_channel(chip, channel)
+        for name in CHANNEL_FILES:
+            target = path / name
+            if target.exists():
+                shutil.chown(target, group=group)
+                os.chmod(target, 0o664)
+        log.info("Exported %s for group %s", path, group)
+    except (OSError, LookupError, ServoError) as exc:
+        log.warning("Could not prepare hardware PWM: %s", exc)
+    return 0
+
+
+def sweep(servo: dict) -> int:
+    """Move to 90, 0, 90, 180, 90 degrees so the horn and pulse limits can be checked."""
+    driver = open_driver(servo)
+    log.info("Servo on GPIO%d via %s", servo["gpio"], driver.name)
+    try:
+        for angle in (90, 0, 90, 180, 90):
+            width = pulse_us(angle, servo)
+            log.info("servo %3d°  pulse %4.0f us  points at azimuth %5.1f°",
+                     angle, width, pointing_azimuth(angle, servo))
+            driver.pulse(width)
+            time.sleep(1.5)
+    finally:
+        driver.close()
+    return 0
+
+
+class ServoController:
+    def __init__(self, servo: dict, state):
+        self.cfg = servo
+        self.state = state
+        self.driver = None
+        self.angle = 90.0
+        self.target = 90.0
+        self.holding = False
+        self.last_move = 0.0
+        self.last_attempt = -math.inf
+        self.error = None
+
+    def run(self, stop: threading.Event) -> None:
+        last = time.monotonic()
+        try:
+            while not stop.is_set():
+                now = time.monotonic()
+                if self.driver is None and now - self.last_attempt >= REOPEN_S:
+                    self._open(now)
+                self._step(now - last)
+                last = now
+                self._report()
+                stop.wait(1.0 / UPDATE_HZ)
+        finally:
+            self._close()
+
+    def _open(self, now: float) -> None:
+        self.last_attempt = now
+        try:
+            self.driver = open_driver(self.cfg)
+        except (ServoError, OSError) as exc:
+            if str(exc) != self.error:
+                log.warning("Servo unavailable: %s", exc)
+            self.error = str(exc)
+            return
+        self.error = None
+        log.info("Servo on GPIO%d via %s", self.cfg["gpio"], self.driver.name)
+        self._send()
+
+    def _step(self, elapsed: float) -> None:
+        tracked = self.state.latest().get("tracked_deg")
+        if tracked is not None:
+            goal = servo_angle_for(tracked, self.cfg)
+            if abs(goal - self.target) >= self.cfg["deadband_deg"]:
+                self.target = goal
+        if self.driver is None:
+            return
+        delta = self.target - self.angle
+        if abs(delta) > 0.05:
+            step = self.cfg["max_speed_dps"] * elapsed
+            self.angle += max(-step, min(step, delta))
+            self._send()
+        elif (self.holding and self.cfg["release_after_s"] > 0
+              and time.monotonic() - self.last_move > self.cfg["release_after_s"]):
+            try:
+                self.driver.release()
+                self.holding = False
+            except OSError as exc:
+                self._lost(exc)
+
+    def _send(self) -> None:
+        try:
+            self.driver.pulse(pulse_us(self.angle, self.cfg))
+        except OSError as exc:
+            self._lost(exc)
+            return
+        self.holding = True
+        self.last_move = time.monotonic()
+
+    def _lost(self, exc: Exception) -> None:
+        log.warning("Servo output failed: %s", exc)
+        self.error = str(exc)
+        self._close()
+
+    def _close(self) -> None:
+        if self.driver is not None:
+            try:
+                self.driver.close()
+            except Exception:
+                pass
+            self.driver = None
+            self.holding = False
+
+    def _report(self) -> None:
+        self.state.set_module("servo", {
+            "enabled": True,
+            "gpio": self.cfg["gpio"],
+            "backend": None if self.driver is None else self.driver.name,
+            "angle_deg": round(self.angle, 1),
+            "target_deg": round(self.target, 1),
+            "pointing_deg": round(pointing_azimuth(self.angle, self.cfg), 1),
+            "holding": self.holding,
+            "error": self.error,
+        })

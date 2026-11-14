@@ -1,0 +1,45 @@
+# reSpeaker XVF3800 direction tracker settings.
+# Anything left out falls back to the defaults in doa_tracker/config.py.
+
+[device]
+# "usb"  - USB firmware, board plugged into a Pi USB port
+# "i2c"  - I2S firmware, control over the Pi I2C bus (SDA GPIO2, SCL GPIO3)
+# "auto" - try USB first, then I2C
+transport = "auto"
+usb_vid = 0x2886
+usb_pid = 0x001A
+i2c_bus = 1
+i2c_address = 0x2C
+poll_hz = 20.0
+
+[tracking]
+# "auto_beam" - azimuth of the beam the XVF3800 auto-selects for output (AEC_AZIMUTH_VALUES[3])
+# "doa"       - DOA_VALUE, the whole-degree heading the LED ring shows
+# "processed" - speech-weighted DoA from AUDIO_MGR_SELECTED_AZIMUTHS
+source = "auto_beam"
+# Only follow the source while the XVF3800 reports speech; otherwise hold the last heading.
+speech_only = true
+
+[dashboard]
+enabled = true
+host = "0.0.0.0"   # reachable from the LAN; use "127.0.0.1" to keep it on the Pi
+port = 8765
+open_browser = false
+
+[lcd]
+# Panel pins, rotation and SPI speed are in display_config/config.py.
+enabled = true
+refresh_hz = 8.0
+
+[servo]
+enabled = true
+gpio = 13                  # header pin 33; RP1 hardware PWM0 channel 1
+backend = "auto"           # "hardware" (sysfs PWM), "software" (lgpio), "auto"
+min_pulse_us = 500         # pulse for servo 0 degrees; raise it if the SG90 buzzes at the end stop
+max_pulse_us = 2400        # pulse for servo 180 degrees; lower it if the SG90 buzzes at the end stop
+center_azimuth_deg = 0.0   # array azimuth the horn faces at servo 90 degrees
+direction = 1              # -1 if the horn turns away from the sound
+out_of_range = "clamp"     # sounds behind the servo: "clamp" to the nearest end, or "mirror" across it
+deadband_deg = 3.0         # ignore heading changes smaller than this
+max_speed_dps = 300.0      # slew limit, degrees per second
+release_after_s = 2.0      # stop pulses after this long still (quiet, no buzz); 0 holds torque

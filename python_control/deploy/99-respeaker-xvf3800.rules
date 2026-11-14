@@ -1,0 +1,2 @@
+# Let members of plugdev send control requests to the reSpeaker XVF3800 without sudo.
+SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="001a", MODE="0660", GROUP="plugdev"

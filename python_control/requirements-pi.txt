@@ -1,0 +1,7 @@
+# Installed into a venv created with --system-site-packages, so lgpio, spidev and numpy
+# come from apt (python3-lgpio, python3-spidev, python3-numpy). See deploy/install_pi.sh.
+pyusb>=1.2.1
+smbus2>=0.4.3
+Adafruit-Blinka>=8.20.0
+adafruit-circuitpython-rgb-display>=3.4.0
+Pillow>=9.4.0
