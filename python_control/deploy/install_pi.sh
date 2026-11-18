@@ -44,6 +44,16 @@ sudo -u "$SERVICE_USER" python3 -m venv --system-site-packages "$APP_DIR/.venv"
 sudo -u "$SERVICE_USER" "$APP_DIR/.venv/bin/pip" install --upgrade pip
 sudo -u "$SERVICE_USER" "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements-pi.txt"
 
+# Cloud code
+if [[ ! -f "$APP_DIR/cloud.env" ]]; then
+    echo "==> Creating $APP_DIR/cloud.env for the Supabase API key"
+    printf '# Supabase API key for cloud upload. Keep this file private; git ignores it.\nSUPABASE_KEY=\n' \
+        > "$APP_DIR/cloud.env"
+fi
+chown "$SERVICE_USER": "$APP_DIR/cloud.env"
+chmod 600 "$APP_DIR/cloud.env"
+# end of the cloud codes
+
 echo "==> USB permissions and groups"
 install -m 0644 "$APP_DIR/deploy/99-respeaker-xvf3800.rules" /etc/udev/rules.d/
 udevadm control --reload-rules

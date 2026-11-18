@@ -212,6 +212,7 @@ For sounds behind the servo, `out_of_range = "clamp"` (the default) holds the
 horn at the nearer end. `"mirror"` points it at the same angle reflected to
 the front instead.
 
+
 ## Day-to-day use
 
 | Task | Command |
@@ -235,7 +236,7 @@ sudo bash deploy/install_pi.sh
 sudo systemctl restart doa-tracker
 ```
 
-Copying over the old folder keeps `.venv`. Back up your `doa_tracker.toml`
+Copying over the old folder keeps `.venv` and `cloud.env`. Back up your `doa_tracker.toml`
 before copying if you've changed it.
 
 ## Troubleshooting
@@ -276,6 +277,19 @@ Use the IP address from `hostname -I` instead of the `.local` name. Check that
 **The service keeps restarting**
 Run `journalctl -u doa-tracker -n 50` to see the error. `Bad settings` means a
 typo in `doa_tracker.toml`; the message names the setting.
+
+**`cloud  HTTP 401` or `HTTP 403`**
+The key is wrong, or Row Level Security is blocking the anon key. Check the
+key in `cloud.env` and add the insert policy from step 8.
+
+**`cloud  HTTP 404`**
+The table name in `doa_tracker.toml` does not match the table in Supabase.
+
+**`cloud  HTTP 400` mentioning a column**
+A column is missing or misspelled; create the table with the SQL in step 8.
+
+**`cloud  cannot reach ...`**
+The Pi has no internet, or `url` has a typo. Try `curl -I <url>` on the Pi.
 
 ## Uninstalling
 

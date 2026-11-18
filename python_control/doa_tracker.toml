@@ -43,3 +43,20 @@ out_of_range = "clamp"     # sounds behind the servo: "clamp" to the nearest end
 deadband_deg = 3.0         # ignore heading changes smaller than this
 max_speed_dps = 300.0      # slew limit, degrees per second
 release_after_s = 2.0      # stop pulses after this long still (quiet, no buzz); 0 holds torque
+
+# cloud codes
+[cloud]
+# Upload detections to Supabase: rows to `table`, camera photos to `bucket`.
+# Run supabase_setup.sql in the Supabase SQL Editor first.
+# The anon key is NOT set here: put SUPABASE_KEY=... in python_control/cloud.env
+# (git ignores it) or export SUPABASE_KEY. Test with: python -m doa_tracker --cloud-test
+enabled = true
+url = "https://cpprovvhjlyiyjhllvzg.supabase.co"   # Supabase project URL
+table = "detections"
+bucket = "photos"
+device_id = "drone-detector-1"  # name stored with each row
+auto_rows = true           # tracker adds an azimuth-only row while a sound is tracked
+sample_interval_s = 1.0    # at most one automatic row per second
+upload_interval_s = 5.0    # send queued rows (and their photos) in one batch this often
+max_queue = 5000           # rows kept while offline; the oldest are dropped past this
+#end of the cloud codes

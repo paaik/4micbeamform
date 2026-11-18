@@ -1,0 +1,5 @@
+# Supabase API key for the cloud upload (see deploy/README.md, step 8)
+cloud.env
+__pycache__/
+.venv/
+.DS_Store

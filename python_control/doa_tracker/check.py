@@ -39,6 +39,17 @@ def run(settings: dict) -> int:
     else:
         line(None, "lcd", "disabled")
 
+# cloud codes
+    cloud = settings["cloud"]
+    if cloud["enabled"]:
+        from .cloud import check_connection
+        ok, detail = check_connection(cloud)
+        failed |= not ok
+        line(ok, "cloud", detail)
+    else:
+        line(None, "cloud", "disabled")
+# end of cloud codes
+
     servo = settings["servo"]
     if not servo["enabled"]:
         line(None, "servo", "disabled")

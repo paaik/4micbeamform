@@ -44,6 +44,18 @@ DEFAULTS = {
         "max_speed_dps": 300.0,
         "release_after_s": 2.0,
     },
+    "cloud": {
+        "enabled": False,
+        "url": "",
+        "table": "detections",
+        "bucket": "photos",
+        "key_env": "SUPABASE_KEY",
+        "device_id": "drone-detector-1",
+        "auto_rows": True,
+        "sample_interval_s": 1.0,
+        "upload_interval_s": 5.0,
+        "max_queue": 5000,
+    },
 }
 
 CHOICES = {
@@ -84,3 +96,11 @@ def validate(settings: dict) -> None:
         raise ValueError("servo pulse widths must satisfy 0 < min_pulse_us < max_pulse_us < 20000")
     if servo["max_speed_dps"] <= 0:
         raise ValueError("servo.max_speed_dps must be positive")
+
+    # cloud codes
+    cloud = settings["cloud"]
+    if cloud["enabled"] and not str(cloud["url"]).startswith("https://"):
+        raise ValueError("cloud.url must be your Supabase project URL (https://...) when cloud.enabled = true")
+    if cloud["sample_interval_s"] <= 0 or cloud["upload_interval_s"] <= 0 or cloud["max_queue"] < 1:
+        raise ValueError("cloud intervals must be positive and cloud.max_queue at least 1")
+    # end of the cloud codes

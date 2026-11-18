@@ -178,6 +178,9 @@
       <tr><td>Servo angle</td><td id="servo-angle">—</td></tr>
       <tr><td>Servo points at</td><td id="servo-pointing">—</td></tr>
       <tr><td>LCD</td><td id="lcd-state">—</td></tr>
+      <!-- cloud codes-->
+      <tr><td>Cloud</td><td id="cloud-state">—</td></tr>
+      <!-- end of the codes codes-->
     </table>
 
     <h2>Beams</h2>
@@ -280,7 +283,16 @@ function applyModules(sample) {
   document.getElementById("servo-pointing").textContent = active ? fmtDeg(servo.pointing_deg) : "—";
   const lcd = modules.lcd;
   document.getElementById("lcd-state").textContent = moduleText(lcd, lcd && lcd.ready ? "Showing azimuth" : "Starting");
+
+  //cloud codes
+
+  const cloud = modules.cloud;
+  const cloudReady = cloud && cloud.sent !== undefined
+    ? cloud.sent + " sent · " + (cloud.photos || 0) + " photos" + (cloud.queued ? " · " + cloud.queued + " queued" : "")
+    : "Starting";
+  document.getElementById("cloud-state").textContent = moduleText(cloud, cloudReady);
 }
+// cloud codes
 
 function applySample(sample) {
   latest = sample;

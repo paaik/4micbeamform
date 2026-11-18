@@ -4,6 +4,7 @@
     python -m doa_tracker --no-servo --no-lcd  # dashboard only (e.g. on a PC)
     python -m doa_tracker --check              # report what is reachable
     python -m doa_tracker --servo-test         # sweep the servo through 0/90/180
+    python -m doa_tracker --cloud-test         # send one test detection to Supabase
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ import threading
 import webbrowser
 
 from . import config
-from .poller import DoaPoller, SharedState
 
 log = logging.getLogger("doa_tracker")
 
@@ -27,6 +27,7 @@ def parse_args(argv):
     parser.add_argument("--no-servo", action="store_true", help="do not drive the servo")
     parser.add_argument("--no-lcd", action="store_true", help="do not use the LCD")
     parser.add_argument("--no-dashboard", action="store_true", help="do not serve the web dashboard")
+    parser.add_argument("--no-cloud", action="store_true", help="do not upload detections to Supabase")
     parser.add_argument("--host", help="dashboard bind address")
     parser.add_argument("--port", type=int, help="dashboard port")
     parser.add_argument("--poll-hz", type=float, help="control poll rate")
@@ -35,6 +36,8 @@ def parse_args(argv):
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="report device, LCD and servo readiness, then exit")
     mode.add_argument("--servo-test", action="store_true", help="sweep the servo to check pulse limits, then exit")
+    mode.add_argument("--cloud-test", action="store_true",
+                      help="upload one test detection with a photo to Supabase, then exit")
     mode.add_argument("--prepare-hardware", action="store_true",
                       help="(root) export the servo PWM channel for --group, then exit")
     parser.add_argument("--group", default="gpio", help="group given access by --prepare-hardware")
@@ -52,6 +55,8 @@ def load_settings(args) -> dict:
         settings["lcd"]["enabled"] = False
     if args.no_dashboard:
         settings["dashboard"]["enabled"] = False
+    if args.no_cloud:
+        settings["cloud"]["enabled"] = False
     if args.host:
         settings["dashboard"]["host"] = args.host
     if args.port:
@@ -80,6 +85,9 @@ def main(argv=None) -> int:
     if args.check:
         from .check import run
         return run(settings)
+    if args.cloud_test:
+        from .cloud import send_test
+        return send_test(settings["cloud"])
     if args.servo_test:
         from .servo import ServoError, sweep
         try:
@@ -87,6 +95,8 @@ def main(argv=None) -> int:
         except (ServoError, OSError) as exc:
             log.error("Servo test failed: %s", exc)
             return 1
+
+    from .poller import DoaPoller, SharedState  # needs pyusb; the --cloud-test path above does not
 
     state = SharedState()
     stop = threading.Event()
@@ -105,6 +115,15 @@ def main(argv=None) -> int:
         workers.append(threading.Thread(target=LcdModule(settings["lcd"], state).run, args=(stop,), name="lcd"))
     else:
         state.set_module("lcd", {"enabled": False})
+# Cloud codes
+    cloud = None  # modules that find a drone call cloud.submit(drone_type, azimuth, elevation, photo_path)
+    if settings["cloud"]["enabled"]:
+        from .cloud import CloudUploader
+        cloud = CloudUploader(settings["cloud"], state)
+        workers.append(threading.Thread(target=cloud.run, args=(stop,), name="cloud"))
+    else:
+        state.set_module("cloud", {"enabled": False})
+# end of the cloud code
 
     server = None
     if settings["dashboard"]["enabled"]:
