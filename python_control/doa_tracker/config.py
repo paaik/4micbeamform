@@ -56,9 +56,9 @@ DEFAULTS = {
         "max_pulse_us": 2000,
         "level_servo_deg": 90.0,
         "direction": -1,
-        "min_elevation_deg": 0.0,
-        "max_elevation_deg": 70.0,
-        "scan_elevations": [15.0, 40.0, 65.0],
+        "min_elevation_deg": -90.0,
+        "max_elevation_deg": 90.0,
+        "scan_elevations": [-40.0, 0.0, 45.0],
         "scan_dwell_s": 1.0,
         "scan_speed_dps": 60.0,
         "max_speed_dps": 120.0,
@@ -154,8 +154,8 @@ def validate(settings: dict) -> None:
     if settings["servo"]["enabled"] and tilt["enabled"] and settings["servo"]["gpio"] == tilt["gpio"]:
         raise ValueError("servo.gpio and tilt.gpio must be different pins")
     low, high = tilt["min_elevation_deg"], tilt["max_elevation_deg"]
-    if not 0 <= low < high <= 90:
-        raise ValueError("tilt elevations must satisfy 0 <= min_elevation_deg < max_elevation_deg <= 90")
+    if not low < high:
+        raise ValueError("tilt.min_elevation_deg must be below tilt.max_elevation_deg")
     for elevation in (low, high):
         servo_angle = tilt["level_servo_deg"] + tilt["direction"] * elevation
         if not 0 <= servo_angle <= 180:

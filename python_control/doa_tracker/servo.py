@@ -276,9 +276,13 @@ def sweep(servo: dict, positions: list[tuple[float, str]]) -> int:
     driver = open_driver(servo)
     speed = 20.0
     log.info("Servo on GPIO%d via %s, moving at %.0f°/s", servo["gpio"], driver.name, speed)
-    angle = positions[0][0]
+    # Start at the level pose (1500 us on this kit). The first goal can be the
+    # end of travel, and an instant jump there drives the plate into the bracket.
+    angle = float(servo.get("level_servo_deg", positions[0][0]))
     try:
         driver.pulse(pulse_us(angle, servo))
+        log.info("servo %5.1f°  pulse %4.0f us  start (level pose)", angle, pulse_us(angle, servo))
+        time.sleep(1.0)
         for goal, description in positions:
             while abs(goal - angle) > 0.05:
                 step = math.copysign(min(speed / UPDATE_HZ, abs(goal - angle)), goal - angle)

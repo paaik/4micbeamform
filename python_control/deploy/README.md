@@ -322,19 +322,21 @@ servo turns to tilt the camera up.
    sudo .venv/bin/python -m doa_tracker --servo-test tilt
    ```
 
-   It moves slowly (20°/s) to the lowest elevation, the middle, the highest, and
-   back, and prints the servo angle and pulse at each stop. With the Adafruit
-   1967 settings that is elevation 0°, 35°, 70°, 35°, 0°. Press Ctrl+C if the
-   arm starts to touch the pan body.
+   It holds the level pose (pulse 1500 µs) for one second, then creeps at 20°/s
+   through the lowest elevation, level, the highest, and back. With the current
+   settings that is -90°, 0°, 90°, 0°, -90°, the servo's full travel. Press
+   Ctrl+C as soon as the plate starts to touch the pan body, and set
+   `min_elevation_deg` to the elevation printed on that line.
 
 2. At elevation 0° the camera should look level at the horizon. If it doesn't,
    change `level_servo_deg` in the `[tilt]` section of `doa_tracker.toml` and
    sweep again.
-3. If the camera tilts down instead of up, set `direction = -1`.
-4. If the kit's frame stops the camera before it points straight up, lower
-   `max_elevation_deg` to where it stops. The settings check refuses any range
-   that would need a servo angle outside 0-180°. If it complains, adjust
-   `level_servo_deg` or `direction`.
+3. If the camera tilts down when the elevation number is going up, change
+   `direction` from `-1` to `1`, or the other way around.
+4. The settings check only refuses a range that would need a servo angle
+   outside 0-180°. There is no 0-90° limit. If the plate hits the pan body
+   before the end of the sweep, set `min_elevation_deg` to the elevation shown
+   in the log at that moment.
 
 `scan_elevations`, `scan_dwell_s` and the speeds in `[tilt]` control the
 search pattern. The Camera v2 sees about 49° vertically, so the default stops
