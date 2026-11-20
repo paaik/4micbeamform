@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=@USER@
-SupplementaryGroups=gpio spi i2c plugdev video
+SupplementaryGroups=gpio spi i2c plugdev video audio
 WorkingDirectory=@APP_DIR@
 Environment=PYTHONUNBUFFERED=1
 # "+" runs this one step as root: it exports the servo PWM channels and hands them to the gpio group.

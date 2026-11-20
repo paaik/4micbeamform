@@ -22,7 +22,7 @@ BOOT_CONFIG=/boot/firmware/config.txt
 echo "==> Installing system packages"
 apt-get update
 apt-get install -y python3-venv python3-dev build-essential python3-lgpio python3-spidev \
-    python3-numpy libusb-1.0-0 fonts-dejavu-core i2c-tools
+    python3-numpy libusb-1.0-0 fonts-dejavu-core i2c-tools libportaudio2 alsa-utils
 apt-get install -y --no-install-recommends python3-picamera2
 
 echo "==> Enabling SPI (LCD) and I2C (reSpeaker I2S firmware control)"
@@ -73,7 +73,7 @@ echo "==> USB permissions and groups"
 install -m 0644 "$APP_DIR/deploy/99-respeaker-xvf3800.rules" /etc/udev/rules.d/
 udevadm control --reload-rules
 udevadm trigger --subsystem-match=usb
-usermod -aG gpio,spi,i2c,plugdev,video "$SERVICE_USER"
+usermod -aG gpio,spi,i2c,plugdev,video,audio "$SERVICE_USER"
 
 echo "==> Installing doa-tracker.service"
 sed -e "s|@USER@|$SERVICE_USER|g" -e "s|@APP_DIR@|$APP_DIR|g" \

@@ -51,7 +51,31 @@ def run(settings: dict) -> int:
             failed |= not check_servo(label, settings[key])
         else:
             line(None, label, "disabled")
+
+    if settings["acoustic"]["enabled"]:
+        ok, detail = check_microphone(settings["acoustic"])
+        failed |= ok is False
+        line(ok, "mic", detail)
+    else:
+        line(None, "mic", "disabled")
     return 1 if failed else 0
+
+
+def check_microphone(acoustic: dict) -> tuple[bool | None, str]:
+    try:
+        import sounddevice as sd
+    except (ImportError, OSError) as exc:
+        return False, "sounddevice/PortAudio missing (sudo apt install libportaudio2): {}".format(exc)
+    from .acoustic import find_microphone
+
+    inputs = ["{}: {}".format(i, d["name"].strip()) for i, d in enumerate(sd.query_devices())
+              if d["max_input_channels"] > 0]
+    found = find_microphone(sd, acoustic["device"])
+    if found is None:
+        # Not a failure: the tracker keeps looking and starts once the mic is plugged in.
+        return None, "no input matches device = {!r}; inputs: {}".format(acoustic["device"], "; ".join(inputs) or "none")
+    rate = int(sd.query_devices(found[0])["default_samplerate"])
+    return True, "{} (device {}, {} Hz)".format(found[1].strip(), found[0], rate)
 
 
 def check_camera() -> tuple[bool, str]:

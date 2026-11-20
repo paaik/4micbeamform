@@ -25,7 +25,7 @@ SYSFS_PWM = Path("/sys/class/pwm")
 CHANNEL_FILES = ("period", "duty_cycle", "enable", "polarity")
 UPDATE_HZ = 50.0
 REOPEN_S = 5.0
-FLIP_HYSTERESIS_DEG = 10.0
+EDGE_HYSTERESIS_DEG = 10.0
 
 
 class ServoError(Exception):
@@ -36,30 +36,58 @@ def wrap180(degrees: float) -> float:
     return (degrees + 180.0) % 360.0 - 180.0
 
 
-def aim(azimuth: float, servo: dict, rear: bool = False) -> tuple[float, bool]:
-    """Servo angle (0-180, 90 = centre) for an array azimuth, and whether the horn's rear end points at it.
+def camera_look_azimuth(azimuth: float, servo: dict) -> float:
+    """Heading the camera must use to look at a sound the array hears at `azimuth`.
 
-    `rear` is the end currently in use; "flip" mode only swaps ends once the
-    source is FLIP_HYSTERESIS_DEG past the reach of that end, so a source near
-    the edge doesn't make the horn swing back and forth.
+    The camera is camera_forward_cm along the array's 0° axis and camera_right_cm
+    toward 270° (right, looking along 0°). The sound is taken to be sound_range_m
+    out from the array centre; 0 treats it as far enough that the offset doesn't matter.
+    """
+    range_m = float(servo.get("sound_range_m") or 0.0)
+    if range_m <= 0.0:
+        return azimuth
+    theta = math.radians(azimuth)
+    camera_x = servo["camera_forward_cm"] / 100.0
+    camera_y = -servo["camera_right_cm"] / 100.0
+    dx = range_m * math.cos(theta) - camera_x
+    dy = range_m * math.sin(theta) - camera_y
+    if dx * dx + dy * dy < 1e-8:
+        return azimuth
+    return math.degrees(math.atan2(dy, dx)) % 360.0
+
+
+def aim(azimuth: float, servo: dict, end: str = "front") -> tuple[float, str]:
+    """Servo angle (0-180, 90 = centre) for an array azimuth, and the horn state: "front", "rear" or "parked".
+
+    `end` is the current state. "flip" swaps ends and "park" parks only once the
+    source is EDGE_HYSTERESIS_DEG past the edge of the front end's reach (and
+    "park" resumes as soon as it is back within reach), so a source near the
+    edge doesn't make the horn swing back and forth.
     """
     relative = wrap180(azimuth - servo["center_azimuth_deg"])
     mode = servo["out_of_range"]
+    limit = 90.0 + EDGE_HYSTERESIS_DEG
     if mode == "flip":
-        limit = 90.0 + FLIP_HYSTERESIS_DEG
+        rear = end == "rear"
         if abs(wrap180(relative - 180.0) if rear else relative) > limit:
             rear = not rear
+        end = "rear" if rear else "front"
         if rear:
             relative = wrap180(relative - 180.0)
         relative = max(-90.0, min(90.0, relative))
+    elif mode == "park":
+        if end == "parked" and abs(relative) > 90.0 or abs(relative) > limit:
+            end, relative = "parked", 0.0
+        else:
+            end, relative = "front", max(-90.0, min(90.0, relative))
     else:
-        rear = False
+        end = "front"
         if abs(relative) > 90.0:
             if mode == "mirror":
                 relative = math.copysign(180.0, relative) - relative
             else:
                 relative = math.copysign(90.0, relative)
-    return 90.0 + servo["direction"] * relative, rear
+    return 90.0 + servo["direction"] * relative, end
 
 
 def pointing_azimuth(angle: float, servo: dict, rear: bool = False) -> float:
@@ -204,31 +232,39 @@ PAN_TEST_DPS = 30.0
 PAN_TEST_PAUSE_S = 1.0
 
 
+END_CHANGES = {
+    "front": "tracking with the front end of the horn",
+    "rear": "swapping to the rear end of the horn",
+    "parked": "out of range; parking at the centre",
+}
+
+
 def pan_test(servo: dict) -> int:
-    """Turn slowly through PAN_TEST_PATH, aiming like the tracker does (including the end swap in "flip" mode)."""
+    """Turn slowly through PAN_TEST_PATH, aiming like the tracker does (end swaps, parking)."""
     driver = open_driver(servo)
-    log.info("Servo on GPIO%d via %s; turning at %.0f°/s", servo["gpio"], driver.name, PAN_TEST_DPS)
+    log.info("Servo on GPIO%d via %s; turning at %.0f°/s, out_of_range = %s",
+             servo["gpio"], driver.name, PAN_TEST_DPS, servo["out_of_range"])
     step = PAN_TEST_DPS / UPDATE_HZ
     max_turn = servo["max_speed_dps"] / UPDATE_HZ
-    azimuth, rear = PAN_TEST_PATH[0], False
+    azimuth, end = PAN_TEST_PATH[0], "front"
     angle = aim(azimuth, servo)[0]
     try:
         for goal in PAN_TEST_PATH:
             while True:
                 azimuth = goal if abs(goal - azimuth) <= step else azimuth + math.copysign(step, goal - azimuth)
-                target, swapped = aim(azimuth % 360.0, servo, rear)
-                if swapped != rear:
-                    log.info("  azimuth %5.1f°: swapping to the %s end of the horn",
-                             azimuth % 360.0, "rear" if swapped else "front")
-                rear = swapped
+                target, changed = aim(azimuth % 360.0, servo, end)
+                if changed != end:
+                    log.info("  azimuth %5.1f°: %s", azimuth % 360.0, END_CHANGES[changed])
+                end = changed
                 angle += max(-max_turn, min(max_turn, target - angle))
                 driver.pulse(pulse_us(angle, servo))
                 if azimuth == goal and abs(target - angle) < 1e-6:
                     break
                 time.sleep(1.0 / UPDATE_HZ)
-            log.info("azimuth %5.1f°  servo %5.1f°  pulse %4.0f us  %s end points at %5.1f°",
-                     goal % 360.0, angle, pulse_us(angle, servo), "rear" if rear else "front",
-                     pointing_azimuth(angle, servo, rear))
+            log.info("azimuth %5.1f°  servo %5.1f°  pulse %4.0f us  %s points at %5.1f°",
+                     goal % 360.0, angle, pulse_us(angle, servo),
+                     "parked, front end" if end == "parked" else end + " end",
+                     pointing_azimuth(angle, servo, end == "rear"))
             time.sleep(PAN_TEST_PAUSE_S)
     finally:
         driver.close()
@@ -257,7 +293,8 @@ class ServoController:
         self.driver = None
         self.angle = 90.0
         self.target = 90.0
-        self.rear = False
+        self.end = "front"
+        self.source = "sound"
         self.holding = False
         self.last_move = 0.0
         self.last_attempt = -math.inf
@@ -288,14 +325,33 @@ class ServoController:
             return
         self.error = None
         log.info("Servo on GPIO%d via %s", self.cfg["gpio"], self.driver.name)
+        if self.cfg["camera_forward_cm"] or self.cfg["camera_right_cm"]:
+            log.info("Camera is %.1f cm forward and %.1f cm toward 270° of the array centre; "
+                     "sound bearings are aimed for a source %.1f m away",
+                     self.cfg["camera_forward_cm"], self.cfg["camera_right_cm"], self.cfg["sound_range_m"])
         self._send()
 
-    def _step(self, elapsed: float) -> None:
+    def _goal_azimuth(self):
+        """The camera's drone azimuth while the tilt is locked on (camera_assist), else the sound direction."""
+        if self.cfg["camera_assist"]:
+            tilt = self.state.module("tilt") or {}
+            lock = tilt.get("lock") if tilt.get("mode") == "track" else None
+            if lock and lock.get("azimuth_deg") is not None:
+                return lock["azimuth_deg"], "camera"
         tracked = self.state.latest().get("tracked_deg")
-        if tracked is not None:
-            goal, rear = aim(tracked, self.cfg, self.rear)
-            if rear != self.rear or abs(goal - self.target) >= self.cfg["deadband_deg"]:
-                self.target, self.rear = goal, rear
+        if tracked is None:
+            return None, "sound"
+        return camera_look_azimuth(tracked, self.cfg), "sound"
+
+    def _step(self, elapsed: float) -> None:
+        azimuth, source = self._goal_azimuth()
+        if source != self.source:
+            log.info("Pan servo now following the %s", "drone in the camera image" if source == "camera" else "sound")
+            self.source = source
+        if azimuth is not None:
+            goal, end = aim(azimuth, self.cfg, self.end)
+            if end != self.end or abs(goal - self.target) >= self.cfg["deadband_deg"]:
+                self.target, self.end = goal, end
         if self.driver is None:
             return
         delta = self.target - self.angle
@@ -341,8 +397,9 @@ class ServoController:
             "backend": None if self.driver is None else self.driver.name,
             "angle_deg": round(self.angle, 1),
             "target_deg": round(self.target, 1),
-            "pointing_deg": round(pointing_azimuth(self.angle, self.cfg, self.rear), 1),
-            "end": "rear" if self.rear else "front",
+            "pointing_deg": round(pointing_azimuth(self.angle, self.cfg, self.end == "rear"), 1),
+            "end": self.end,
+            "source": self.source,
             "holding": self.holding,
             "error": self.error,
         })

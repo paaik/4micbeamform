@@ -9,10 +9,14 @@ One service that reads the XVF3800's beamformed azimuth and:
   [`../drone_detector`](../drone_detector) (`POST /api/detections`),
 - shows the azimuth and camera elevation on the Waveshare 1.69" ST7789 LCD
   (`../display_config`),
-- serves the live 3D dashboard, with the camera feed and detection boxes, at
-  `http://<pi>.local:8765/`.
+- captures a USB measurement microphone, streams its spectrogram to the
+  dashboard (`/spectrum/events`), and flags a drone when a propeller
+  blade-pass frequency and its harmonics persist (`acoustic.py`, `[acoustic]`
+  in `doa_tracker.toml`),
+- serves the live 3D dashboard, with the camera feed, detection boxes and
+  spectrogram, at `http://<pi>.local:8765/`.
 
-Each part runs on its own thread. If the LCD, a servo or the camera is missing
+Each part runs on its own thread. If the LCD, a servo, the camera or the microphone is missing
 or fails, the others keep running and the dashboard shows the error.
 
 ## Wiring (Raspberry Pi 5, physical header pins)
@@ -82,10 +86,30 @@ angle that holds the camera level, and `direction = -1` reverses it. For the
 pan servo:
 `--servo-test` turns the horn slowly through azimuths 0, 90, 180, 90, 0, 270
 and 180, `center_azimuth_deg` sets the azimuth the
-horn faces at servo 90°, and `direction = -1` reverses it. With
-`out_of_range = "flip"`, the horn's rear end points at sounds the front end
-can't reach, which covers the full 360°. The dashboard's 0°
+horn faces at servo 90°, and `direction = -1` reverses it. The camera covers
+`center_azimuth_deg` ±90°. With the default `out_of_range = "park"`, it parks
+at servo 90° when the target is outside that range. With
+`camera_assist = true`, the pan follows the drone in the camera image once the
+tilt locks on, and follows the sound the rest of the time. The camera sits
+`camera_forward_cm` along 0° and `camera_right_cm` toward 270°, and sound
+bearings are aimed for a source `sound_range_m` away. The dashboard's 0°
 mark is the array's +X axis, and angles increase toward +Y.
+
+## Measurement microphone and drone BPF
+
+See step 9 of [`../deploy/README.md`](../deploy/README.md). The microphone can
+be plugged in or out while the tracker runs. Each 0.1 s frame (8192-point FFT)
+gives one spectrogram column. The detector compares the spectrum with the
+noise around each frequency and with a slowly learned background, then looks
+for a fundamental in `bpf_min_hz`–`bpf_max_hz` plus at least `min_harmonics`
+of its first `harmonics` multiples. A drone is flagged when the same BPF
+(within 4%) is found in 80% of the frames over `confirm_s`. `--no-acoustic`
+turns it off.
+
+The level is reported in dBFS (`level_dbfs`). Setting `spl_offset_db` (for
+example about 134 for the Omnitronic MM-2USB, checked against a reference SPL
+meter or a 94 dB calibrator) also reports `level_db_spl = level_dbfs +
+spl_offset_db`, and the dashboard then shows dB SPL.
 
 ## Run on a PC (dashboard only)
 
@@ -93,3 +117,6 @@ mark is the array's +X axis, and angles increase toward +Y.
 python doa_dashboard.py                      # Windows/macOS/Linux, opens a browser
 python -m doa_tracker --no-servo --no-tilt --no-camera --no-lcd    # same thing with all options
 ```
+
+The PC dashboard also uses a USB microphone plugged into the PC, if there is
+one (`pip install sounddevice numpy`).

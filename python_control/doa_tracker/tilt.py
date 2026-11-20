@@ -9,14 +9,32 @@ goes back to scanning from the nearest scan position.
 
 from __future__ import annotations
 
+import csv
 import logging
 import math
 import threading
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 from .servo import REOPEN_S, UPDATE_HZ, ServoError, open_driver, pulse_us
 
 log = logging.getLogger(__name__)
+
+TRACK_LOG = Path(__file__).resolve().parent.parent / "logs" / "drone_track.csv"
+
+
+def best_detection(detections, min_confidence: float):
+    """The highest-confidence box the tilt can follow, or None.
+
+    Several boxes can be in one frame. Only one drone is tracked, and it is the
+    one with the higher confidence, provided it clears min_confidence and has an elevation.
+    """
+    usable = [d for d in detections
+              if d.get("confidence", 0.0) >= min_confidence and d.get("elevation_deg") is not None]
+    if not usable:
+        return None
+    return max(usable, key=lambda d: d["confidence"])
 
 
 def servo_angle(elevation: float, tilt: dict) -> float:
@@ -44,6 +62,8 @@ class TiltController:
         self.last_seq = None
         self.last_seen = -math.inf
         self.lock = None
+        self.track_log = None
+        self.last_logged = None
         self.driver = None
         self.last_attempt = -math.inf
         self.error = None
@@ -79,7 +99,7 @@ class TiltController:
         self._follow_detections(now)
         if self.mode == "track" and now - self.last_seen > self.cfg["lost_after_s"]:
             log.info("Drone lost at %.1f° elevation; scanning", self.elevation)
-            self.mode, self.lock = "scan", None
+            self.mode, self.lock, self.last_logged = "scan", None, None
             self.scan_index = min(range(len(self.scan)), key=lambda i: abs(self.scan[i] - self.elevation))
             self.target, self.arrived_at = self.scan[self.scan_index], None
         if self.mode == "scan":
@@ -99,18 +119,60 @@ class TiltController:
         if result is None or result["seq"] == self.last_seq:
             return
         self.last_seq = result["seq"]
-        for detection in result["detections"]:
-            if detection["confidence"] >= self.cfg["min_confidence"] and detection["elevation_deg"] is not None:
-                break
-        else:
+        detection = best_detection(result["detections"], self.cfg["min_confidence"])
+        if detection is None:
             return
         goal = max(self.cfg["min_elevation_deg"], min(self.cfg["max_elevation_deg"], detection["elevation_deg"]))
+        azimuth = detection.get("azimuth_deg")
         if self.mode != "track":
-            log.info("Drone found (%s %.0f%%) at %.1f° elevation; tracking",
-                     detection["label"], detection["confidence"] * 100, detection["elevation_deg"])
+            log.info("Drone found (%s %.0f%%) at azimuth %s, elevation %.1f°; tracking",
+                     detection["label"], detection["confidence"] * 100,
+                     "unknown" if azimuth is None else "{:.1f}°".format(azimuth), detection["elevation_deg"])
+            self.last_logged = (azimuth, detection["elevation_deg"])
         self.mode, self.lock, self.last_seen = "track", detection, now
+        self._record(detection, result["seq"])
         if abs(goal - self.target) >= self.cfg["deadband_deg"]:
             self.target = goal
+
+    def _record(self, detection: dict, seq: int) -> None:
+        """Append one track sample. Failures are logged once and then ignored."""
+        azimuth = detection.get("azimuth_deg")
+        previous = self.last_logged
+        moved = previous is None or abs(detection["elevation_deg"] - previous[1]) >= 0.5 or (
+            azimuth is not None and previous[0] is not None and abs((azimuth - previous[0] + 180) % 360 - 180) >= 0.5)
+        if moved:
+            log.info("Drone track: azimuth %s  elevation %.1f°  %s %.0f%%",
+                     "—" if azimuth is None else "{:6.1f}°".format(azimuth),
+                     detection["elevation_deg"], detection["label"], detection["confidence"] * 100)
+            self.last_logged = (azimuth, detection["elevation_deg"])
+        try:
+            if self.track_log is None:
+                TRACK_LOG.parent.mkdir(parents=True, exist_ok=True)
+                new = not TRACK_LOG.exists() or TRACK_LOG.stat().st_size == 0
+                self.track_log = TRACK_LOG.open("a", newline="", encoding="utf-8")
+                self._writer = csv.writer(self.track_log)
+                if new:
+                    self._writer.writerow(("time", "frame", "azimuth_deg", "elevation_deg", "confidence", "label"))
+            self._writer.writerow((
+                datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                seq,
+                "" if azimuth is None else "{:.2f}".format(azimuth),
+                "{:.2f}".format(detection["elevation_deg"]),
+                "{:.3f}".format(detection["confidence"]),
+                detection["label"],
+            ))
+            self.track_log.flush()
+        except OSError as exc:
+            log.warning("Could not write %s: %s", TRACK_LOG, exc)
+            self._close_log()
+
+    def _close_log(self) -> None:
+        if self.track_log is not None:
+            try:
+                self.track_log.close()
+            except OSError:
+                pass
+            self.track_log = None
 
     def _advance_scan(self, now: float) -> None:
         if abs(self.elevation - self.target) > 0.05 or len(self.scan) < 2:
@@ -139,6 +201,7 @@ class TiltController:
             except Exception:
                 pass
             self.driver = None
+        self._close_log()
 
     def _report(self, now: float) -> None:
         moving = abs(self.target - self.elevation) > 0.05

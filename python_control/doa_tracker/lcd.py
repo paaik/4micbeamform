@@ -74,9 +74,19 @@ def frame_key(snapshot: dict):
         bool(snapshot.get("tracking_live")),
         None if pointing is None else round(pointing) % 360,
         servo.get("end"),
+        servo.get("source"),
         elevation_text(snapshot),
+        drone_text(snapshot),
         (snapshot.get("error") or "")[:30],
     )
+
+
+def drone_text(snapshot: dict):
+    """"DRONE 375Hz" while the measurement mic hears a blade-pass signature, else None."""
+    acoustic = snapshot.get("modules", {}).get("acoustic") or {}
+    if not acoustic.get("detected") or acoustic.get("bpf_hz") is None:
+        return None
+    return "DRONE {:.0f}Hz".format(acoustic["bpf_hz"])
 
 
 def elevation_text(snapshot: dict):
@@ -99,7 +109,8 @@ def render(snapshot: dict, width: int, height: int, fonts: dict):
     live = bool(snapshot.get("tracking_live"))
     servo = snapshot.get("modules", {}).get("servo") or {}
 
-    draw.text((14, 10), "AZIMUTH", font=fonts["small"], fill=MUTED)
+    drone = drone_text(snapshot)
+    draw.text((14, 10), drone or "AZIMUTH", font=fonts["small"], fill=BAD if drone else MUTED)
     status = BAD if not ok else (SPEECH if speech else OK)
     draw.ellipse((width - 26, 12, width - 12, 26), fill=status)
     elevation = elevation_text(snapshot)
@@ -140,8 +151,11 @@ def render(snapshot: dict, width: int, height: int, fonts: dict):
     else:
         parts = ["speech" if speech else "quiet"]
         if servo.get("backend"):
-            parts.append("servo {:.0f}°{}".format(servo.get("angle_deg", 0),
-                                                  " rear" if servo.get("end") == "rear" else ""))
+            if servo.get("end") == "parked":
+                parts.append("servo parked")
+            else:
+                parts.append("servo {:.0f}°{}".format(servo.get("angle_deg", 0), {
+                    "rear": " rear", "front": " cam" if servo.get("source") == "camera" else ""}[servo.get("end", "front")]))
         footer, color = "  ·  ".join(parts), MUTED
     centered_text(draw, cx, height - 22, footer, fonts["small"], color)
     return image

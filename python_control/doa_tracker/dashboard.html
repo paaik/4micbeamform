@@ -50,7 +50,35 @@
   #dot.speech { background: var(--speech); box-shadow: 0 0 0 4px rgba(255, 106, 42, 0.18); }
   #dot.bad { background: var(--bad); box-shadow: 0 0 0 4px rgba(255, 93, 108, 0.15); }
   main { display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
+  #left { display: grid; grid-template-rows: 1fr auto; min-width: 0; min-height: 0; }
   #stage { position: relative; min-width: 0; min-height: 0; }
+  #acoustic { border-top: 1px solid var(--line); background: var(--panel); padding: 8px 12px 10px; }
+  #acoustic[hidden] { display: none; }
+  .ac-bar {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 6px;
+    color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums;
+  }
+  .ac-bar h2 { margin: 0; }
+  .ac-bar label { display: flex; align-items: center; gap: 6px; }
+  .ac-bar input[type="range"] { width: 90px; }
+  #ac-info { margin-left: auto; }
+  #bpf-flag {
+    padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line);
+    font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap;
+  }
+  #bpf-flag.maybe { color: var(--amber); border-color: var(--amber); }
+  #bpf-flag.on {
+    color: #2a0c10; background: var(--bad); border-color: var(--bad); font-weight: 650;
+    animation: flag 0.8s ease-in-out infinite alternate;
+  }
+  @keyframes flag { to { box-shadow: 0 0 0 5px rgba(255, 93, 108, 0.25); } }
+  .ac-plot { position: relative; height: 200px; }
+  #ac-empty {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    color: var(--muted); font-size: 12px; text-align: center; padding: 12px;
+  }
+  #ac-empty[hidden] { display: none; }
+  tr.alarm td { color: var(--bad); font-weight: 650; }
   canvas { display: block; width: 100%; height: 100%; }
   #labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
   #labels span {
@@ -157,7 +185,8 @@
   #device div { margin: 0 0 6px; }
   #error { color: var(--bad); min-height: 1.2em; }
   @media (max-width: 860px) {
-    main { grid-template-columns: 1fr; grid-template-rows: minmax(320px, 55vh) auto; }
+    main { grid-template-columns: 1fr; grid-template-rows: auto auto; }
+    #stage { height: 55vh; min-height: 320px; }
     aside { border-left: 0; border-top: 1px solid var(--line); }
   }
 </style>
@@ -171,6 +200,7 @@
   <div id="status"><span id="dot"></span><span id="status-text">Connecting</span></div>
 </header>
 <main>
+  <div id="left">
   <div id="stage">
     <canvas id="view" role="application" aria-label="Direction plot"></canvas>
     <div id="labels"></div>
@@ -192,6 +222,19 @@
       <div class="cam-bar"><span id="cam-mode">—</span><span id="cam-info">—</span></div>
     </div>
   </div>
+  <section id="acoustic" hidden>
+    <div class="ac-bar">
+      <h2>Spectrogram · measurement mic</h2>
+      <span id="bpf-flag">—</span>
+      <span id="ac-info">—</span>
+      <label>Range <input id="ac-range" type="range" min="20" max="90" value="50"><span id="ac-range-val">50 dB</span></label>
+    </div>
+    <div class="ac-plot">
+      <canvas id="spectrogram" aria-label="Spectrogram"></canvas>
+      <div id="ac-empty">Waiting for the microphone</div>
+    </div>
+  </section>
+  </div>
   <aside>
     <div class="bearing"><span id="tracked">---</span><small>°</small></div>
     <div id="speech">Waiting</div>
@@ -212,7 +255,17 @@
       <tr><td>Tilt servo</td><td id="tilt-state">—</td></tr>
       <tr><td>Camera elevation</td><td id="tilt-elevation">—</td></tr>
       <tr><td>Camera</td><td id="camera-state">—</td></tr>
+      <tr><td>Measurement mic</td><td id="mic-state">—</td></tr>
       <tr><td>LCD</td><td id="lcd-state">—</td></tr>
+    </table>
+
+    <h2>Drone (acoustic)</h2>
+    <table>
+      <tr id="bpf-row"><td>Blade-pass signature</td><td id="bpf-state">—</td></tr>
+      <tr><td>Blade-pass frequency</td><td id="bpf-hz">—</td></tr>
+      <tr><td>Motor RPM</td><td id="bpf-rpm">—</td></tr>
+      <tr><td>Harmonics matched</td><td id="bpf-harmonics">—</td></tr>
+      <tr><td>Mic level</td><td id="mic-level">—</td></tr>
     </table>
 
     <h2>Drone (camera)</h2>
@@ -322,7 +375,8 @@ function applyModules(sample) {
   const active = servo && servo.enabled !== false;
   document.getElementById("servo-angle").textContent = active ? fmtDeg(servo.angle_deg) : "—";
   document.getElementById("servo-pointing").textContent = active
-    ? fmtDeg(servo.pointing_deg) + (servo.end === "rear" ? " (rear end)" : "") : "—";
+    ? fmtDeg(servo.pointing_deg) + ({ rear: " (rear end)", parked: " (parked)" }[servo.end] || "")
+      + (servo.source === "camera" ? " · camera" : "") : "—";
   const lcd = modules.lcd;
   document.getElementById("lcd-state").textContent = moduleText(lcd, lcd && lcd.ready ? "Showing azimuth" : "Starting");
 
@@ -335,6 +389,7 @@ function applyModules(sample) {
   document.getElementById("camera-state").textContent = moduleText(camera, camera && camera.ready
     ? camera.model + " · " + camera.width + "×" + camera.height + " · " + camera.fps + " fps" : "Starting");
   applyVision(modules, servo);
+  applyAcoustic(modules.acoustic);
 }
 
 function applyVision(modules, servo) {
@@ -344,7 +399,8 @@ function applyVision(modules, servo) {
   const online = !!vision.detector_online;
   const detections = online ? (vision.detections || []) : [];
   const lock = tilt.mode === "track" ? tilt.lock : null;
-  const behind = servo && servo.end === "rear";
+  const outOfReach = servo && servo.end === "parked" ? "Sound is outside the camera's range; parked"
+    : (servo && servo.end === "rear" ? "Sound is behind the camera" : null);
 
   document.getElementById("det-state").textContent = !camera || camera.enabled === false ? "Camera off"
     : online ? (vision.model || "detector") + " · " + vision.detector_fps + " fps"
@@ -352,7 +408,7 @@ function applyVision(modules, servo) {
     : (vision.client ? "Offline (last " + vision.client + ")" : "Not connected");
   document.getElementById("det-count").textContent = online ? String(detections.length) : "—";
   document.getElementById("det-lock").textContent = lock
-    ? lock.label + " " + Math.round(lock.confidence * 100) + "%" : (behind ? "Sound is behind the camera" : "—");
+    ? lock.label + " " + Math.round(lock.confidence * 100) + "%" : (outOfReach || "—");
   document.getElementById("det-elevation").textContent = lock ? fmtDeg(lock.elevation_deg) : "—";
   document.getElementById("det-azimuth").textContent = lock ? fmtDeg(lock.azimuth_deg) : "—";
 
@@ -504,6 +560,223 @@ function deviceHtml(sample) {
   return [fw + " · " + mics + " · " + arrayType, link, bits, i2s, outputs || "Output route —"]
     .map(line => "<div>" + line + "</div>").join("");
 }
+
+const spec = { meta: null, cols: [], floor: null, dirty: false, source: null, status: null };
+const SPEC_STOPS = [
+  [0.0, [8, 10, 18]], [0.2, [40, 18, 84]], [0.45, [128, 31, 108]],
+  [0.7, [226, 82, 56]], [0.88, [252, 170, 30]], [1.0, [252, 250, 190]],
+];
+const SPEC_LUT = (() => {
+  const lut = new Uint8ClampedArray(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const v = i / 255;
+    let k = 0;
+    while (k < SPEC_STOPS.length - 2 && v > SPEC_STOPS[k + 1][0]) k++;
+    const [p0, c0] = SPEC_STOPS[k];
+    const [p1, c1] = SPEC_STOPS[k + 1];
+    const f = Math.max(0, Math.min(1, (v - p0) / (p1 - p0)));
+    for (let j = 0; j < 3; j++) lut[i * 3 + j] = c0[j] + (c1[j] - c0[j]) * f;
+  }
+  return lut;
+})();
+const acRange = document.getElementById("ac-range");
+acRange.addEventListener("input", () => {
+  document.getElementById("ac-range-val").textContent = acRange.value + " dB";
+  spec.dirty = true;
+});
+
+function applyAcoustic(status) {
+  const panel = document.getElementById("acoustic");
+  spec.status = status || null;
+  const off = !status || status.enabled === false;
+  panel.hidden = off;
+  document.getElementById("mic-state").textContent = moduleText(status,
+    status && status.ready ? status.device + " · " + (status.sample_rate / 1000) + " kHz" : "Waiting for a USB mic");
+  const row = document.getElementById("bpf-row");
+  const detected = !off && status.detected;
+  row.className = detected ? "alarm" : "";
+  document.getElementById("bpf-state").textContent = off ? "Mic off"
+    : !status.ready ? "No microphone"
+    : detected ? "DRONE DETECTED (" + status.detected_for_s.toFixed(0) + " s)" : "None";
+  document.getElementById("bpf-hz").textContent = detected ? status.bpf_hz.toFixed(1) + " Hz" : "—";
+  document.getElementById("bpf-rpm").textContent = detected
+    ? Math.round(status.rpm).toLocaleString() + " (" + status.blades + "-blade props)" : "—";
+  document.getElementById("bpf-harmonics").textContent = detected
+    ? status.harmonics + " of " + status.harmonics_searched : "—";
+  document.getElementById("mic-level").textContent = off ? "—" : micLevel(status);
+  document.title = detected ? "DRONE BPF " + Math.round(status.bpf_hz) + " Hz · reSpeaker DOA" : "reSpeaker DOA";
+  if (off) return;
+  if (!spec.source) {
+    spec.source = new EventSource("/spectrum/events");
+    spec.source.onmessage = (event) => receiveSpectrum(JSON.parse(event.data));
+  }
+  const empty = document.getElementById("ac-empty");
+  empty.hidden = !!status.ready && spec.cols.length > 0;
+  if (!status.ready) empty.textContent = status.error || "Waiting for the microphone";
+  updateFlag();
+}
+
+function receiveSpectrum(message) {
+  if (message.meta) {
+    spec.meta = message.meta;
+    spec.cols = [];
+    spec.floor = null;
+  }
+  (message.cols || []).forEach(col => {
+    const raw = atob(col[2]);
+    const data = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) data[i] = raw.charCodeAt(i);
+    spec.cols.push({ seq: col[0], t: col[1], data, mark: col[3], f: col[4] });
+  });
+  const capacity = spec.meta ? spec.meta.capacity : 300;
+  if (spec.cols.length > capacity) spec.cols.splice(0, spec.cols.length - capacity);
+  spec.dirty = true;
+  updateFlag();
+}
+
+function updateFlag() {
+  const flag = document.getElementById("bpf-flag");
+  const status = spec.status;
+  const last = spec.cols[spec.cols.length - 1];
+  if (!status || !status.ready) {
+    flag.className = "";
+    flag.textContent = "No microphone";
+  } else if (status.detected) {
+    flag.className = "on";
+    flag.textContent = "Drone BPF detected · " + status.bpf_hz.toFixed(0) + " Hz · "
+      + Math.round(status.rpm).toLocaleString() + " RPM";
+  } else if (last && last.mark === 1 && last.f) {
+    flag.className = "maybe";
+    flag.textContent = "Possible BPF " + last.f.toFixed(0) + " Hz";
+  } else {
+    flag.className = "";
+    flag.textContent = "No BPF signature";
+  }
+  document.getElementById("ac-info").textContent = status && status.ready
+    ? micLevel(status) + " · BPF search " + status.search_hz[0] + "–" + status.search_hz[1] + " Hz" : "";
+}
+
+function micLevel(status) {
+  if (status.level_db_spl !== null && status.level_db_spl !== undefined) return status.level_db_spl.toFixed(1) + " dB SPL";
+  if (status.level_dbfs !== null && status.level_dbfs !== undefined) return status.level_dbfs.toFixed(1) + " dBFS";
+  return "—";
+}
+
+function niceStep(span, maxTicks) {
+  const steps = [50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000];
+  return steps.find(step => span / step <= maxTicks) || 20000;
+}
+
+function drawSpectrogram() {
+  requestAnimationFrame(drawSpectrogram);
+  const canvas = document.getElementById("spectrogram");
+  if (document.getElementById("acoustic").hidden) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+  const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+    spec.dirty = true;
+  }
+  if (!spec.dirty) return;
+  spec.dirty = false;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#0d1016";
+  ctx.fillRect(0, 0, width, height);
+  const meta = spec.meta;
+  if (!meta || !spec.cols.length) return;
+
+  const left = 46 * dpr, right = 8 * dpr, top = 6 * dpr, bottom = 16 * dpr;
+  const plotW = width - left - right, plotH = height - top - bottom;
+  const rows = meta.rows, capacity = meta.capacity;
+  const dbStep = (meta.db_max - meta.db_min) / 255;
+
+  const latest = Array.from(spec.cols[spec.cols.length - 1].data).sort((a, b) => a - b);
+  const quiet = meta.db_min + latest[Math.floor(latest.length * 0.3)] * dbStep;
+  spec.floor = spec.floor === null ? quiet : spec.floor * 0.95 + quiet * 0.05;
+  const range = Number(acRange.value);
+  const floor = spec.floor - 3;
+
+  if (!spec.image || spec.image.width !== capacity || spec.image.height !== rows) {
+    spec.image = document.createElement("canvas");
+    spec.image.width = capacity;
+    spec.image.height = rows;
+  }
+  const imgCtx = spec.image.getContext("2d");
+  const pixels = imgCtx.createImageData(capacity, rows);
+  const offset = capacity - spec.cols.length;
+  spec.cols.forEach((col, index) => {
+    const x = offset + index;
+    for (let r = 0; r < rows; r++) {
+      const db = meta.db_min + col.data[r] * dbStep;
+      const v = Math.max(0, Math.min(255, Math.round((db - floor) / range * 255)));
+      const p = ((rows - 1 - r) * capacity + x) * 4;
+      pixels.data[p] = SPEC_LUT[v * 3];
+      pixels.data[p + 1] = SPEC_LUT[v * 3 + 1];
+      pixels.data[p + 2] = SPEC_LUT[v * 3 + 2];
+      pixels.data[p + 3] = 255;
+    }
+  });
+  imgCtx.putImageData(pixels, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(spec.image, left, top, plotW, plotH);
+
+  const yOf = hz => top + plotH * (1 - hz / meta.max_hz);
+  const xOf = index => left + (offset + index + 0.5) / capacity * plotW;
+  ctx.fillStyle = "rgba(94, 230, 242, 0.12)";
+  ctx.fillRect(left, yOf(meta.bpf_max_hz), plotW, yOf(meta.bpf_min_hz) - yOf(meta.bpf_max_hz));
+
+  spec.cols.forEach((col, index) => {
+    if (!col.mark || !col.f) return;
+    const x = xOf(index);
+    if (col.mark === 2) {
+      ctx.fillStyle = "#ff5d6c";
+      ctx.fillRect(x - plotW / capacity / 2, top, plotW / capacity + 0.5, 4 * dpr);
+    }
+    ctx.fillStyle = col.mark === 2 ? "#5ee6f2" : "rgba(255, 176, 32, 0.8)";
+    ctx.beginPath();
+    ctx.arc(x, yOf(col.f), (col.mark === 2 ? 2 : 1.5) * dpr, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  const status = spec.status;
+  ctx.font = (10 * dpr) + "px Segoe UI, sans-serif";
+  if (status && status.detected && status.bpf_hz) {
+    ctx.setLineDash([4 * dpr, 4 * dpr]);
+    ctx.strokeStyle = "rgba(94, 230, 242, 0.9)";
+    ctx.lineWidth = dpr;
+    for (let k = 1; k <= meta.harmonics; k++) {
+      const y = yOf(k * status.bpf_hz);
+      if (y < top) break;
+      ctx.beginPath();
+      ctx.moveTo(left + plotW * 0.82, y);
+      ctx.lineTo(left + plotW, y);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#5ee6f2";
+    ctx.fillText("BPF " + status.bpf_hz.toFixed(0) + " Hz", left + plotW * 0.82, yOf(status.bpf_hz) - 4 * dpr);
+  }
+
+  ctx.fillStyle = "#8e99aa";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  const step = niceStep(meta.max_hz, 8);
+  for (let hz = 0; hz <= meta.max_hz; hz += step) {
+    const y = Math.max(top + 5 * dpr, Math.min(top + plotH - 2 * dpr, yOf(hz)));
+    ctx.fillText(hz >= 1000 ? (hz / 1000) + " kHz" : hz + " Hz", left - 5 * dpr, y);
+  }
+  ctx.textBaseline = "alphabetic";
+  const seconds = capacity * meta.hop_s;
+  const tStep = seconds > 40 ? 10 : 5;
+  for (let s = 0; s <= seconds + 0.01; s += tStep) {
+    ctx.textAlign = s === 0 ? "right" : "center";
+    ctx.fillText(s === 0 ? "now" : "-" + s + " s", left + plotW * (1 - s / seconds), height - 3 * dpr);
+  }
+  ctx.textAlign = "left";
+}
+requestAnimationFrame(drawSpectrogram);
 
 const source = new EventSource("/events");
 source.onmessage = (event) => {

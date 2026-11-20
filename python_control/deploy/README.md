@@ -9,7 +9,10 @@ boot. Once running, it:
 - shows the azimuth and camera elevation on the Waveshare 1.69" LCD,
 - serves the live 3D dashboard and the camera feed on your network,
 - sends the camera feed to a PC, which runs the drone detection and sends the
-  results back to steer the tilt.
+  results back to steer the tilt,
+- streams a live spectrogram from a USB measurement microphone to the
+  dashboard, and flags a drone when it hears a propeller blade-pass frequency
+  (step 9).
 
 Expect about 45 minutes, most of it package installs.
 
@@ -29,6 +32,8 @@ Expect about 45 minutes, most of it package installs.
   recommended, plus a 470 µF capacitor (see step 3).
 - A PC on the same network to run the drone detection, ideally with an NVIDIA
   GPU, and YOLO weights trained to detect drones (step 8).
+- Optional: a USB measurement microphone for the spectrogram and the acoustic
+  drone flag (step 9).
 
 ## 1. Install Raspberry Pi OS
 
@@ -134,7 +139,8 @@ Run it with `sudo` from your normal account, not from a root shell. It needs
 to know which user will own the service. The installer:
 
 1. installs system packages (Python tools, lgpio, spidev, numpy, Picamera2,
-   libusb, fonts, i2c-tools),
+   libusb, PortAudio for the measurement microphone, fonts, i2c-tools,
+   alsa-utils),
 2. enables SPI for the LCD and I2C for the reSpeaker's I2S firmware,
 3. adds `dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4` to
    `/boot/firmware/config.txt`, which routes GPIO12 (tilt) and GPIO13 (pan) to
@@ -144,7 +150,8 @@ to know which user will own the service. The installer:
    Python packages,
 5. installs a udev rule so your user can talk to the reSpeaker over USB without
    `sudo`,
-6. adds your user to the `gpio`, `spi`, `i2c`, `plugdev` and `video` groups,
+6. adds your user to the `gpio`, `spi`, `i2c`, `plugdev`, `video` and `audio`
+   groups,
 7. installs and enables `doa-tracker.service` so the tracker starts at boot.
 
 Then reboot so SPI, I2C, the PWM overlay and the new group memberships take
@@ -176,7 +183,12 @@ A healthy setup looks roughly like this:
 [ok  ] pin mux    13: a0 pd | lo // GPIO13 = PWM0_CHAN1
 [ok  ] tilt servo GPIO12 -> /sys/class/pwm/pwmchip0/pwm0 (writable)
 [ok  ] pin mux    12: a0 pd | lo // GPIO12 = PWM0_CHAN0
+[ok  ] mic        USB Microphone: Audio (hw:2,0) (device 1, 48000 Hz)
 ```
+
+Without a measurement microphone plugged in, the `mic` line reads `--` and
+lists the inputs it can see. That isn't a failure; the tracker starts using
+the mic as soon as you plug it in.
 
 You can also list the camera directly with `rpicam-hello --list-cameras`.
 
@@ -198,6 +210,8 @@ The log should show lines like these:
 - `Servo on GPIO13 via hardware PWM`
 - `Tilt servo on GPIO12 via hardware PWM`
 - `Camera imx219 streaming 1280x960 at 15 fps`
+- `Measurement microphone 'USB Microphone: Audio (hw:2,0)' at 48000 Hz; ...`
+  (once a USB microphone is plugged in)
 - `LCD ready (240x280)`
 - `Dashboard at http://respeaker.local:8765/`
 
@@ -214,11 +228,12 @@ Until the PC detector from step 8 is running, the tilt just keeps scanning.
 
 ### Pan servo
 
-An SG90 only turns 180°. To still cover the full 360°, the tracker uses both
-ends of the double-ended horn that comes with the servo. The front end follows
-sounds in the half the servo can reach. For sounds in the other half, the horn
-turns so its rear end points at the source. Calibration sets which half the
-front end covers. Run these commands from `~/python_control`.
+An SG90 only turns 180°, so the camera covers half the circle: azimuths 270°
+through 0° to 90°, with servo 90° facing 0°. Inside that half, the pan
+follows the sound until the camera finds the drone, then follows the drone's
+position in the camera image. When the target is outside that half, the
+camera parks facing 0° and waits until it comes back into range. Calibration
+sets which direction counts as 0°. Run these commands from `~/python_control`.
 
 1. Stop the service so it doesn't fight the test:
 
@@ -234,25 +249,26 @@ front end covers. Run these commands from `~/python_control`.
 
    It turns the horn slowly (30°/s) through azimuths 0°, 90° and 180°
    counter-clockwise, then clockwise back through 90° and 0° to 270° and 180°.
-   It aims exactly as the tracker does, so azimuths the front end can't reach
-   use the rear end. Each swap is logged ("swapping to the rear end of the
-   horn"), and the horn swings across at `max_speed_dps`. At each stop it
-   prints the servo angle, pulse width and which end points where. It needs
+   It aims exactly as the tracker does. Just past 90° and 270° it logs "out of
+   range; parking at the centre" and the camera returns to servo 90°, waiting
+   there until the sweep comes back into range. At each stop it prints the
+   servo angle, pulse width and where the camera points. It needs
    `sudo` because the PWM channel is only handed to your user while the
    service is starting. If the servo buzzes or strains at either end, open
    `doa_tracker.toml` and raise `min_pulse_us` or lower `max_pulse_us` by
    about 100 µs, then run it again.
 
-3. With the default `center_azimuth_deg = 0` and `"flip"` mode, the test
-   starts and ends with the servo at 90°. Fit the double-ended horn so one end faces the direction you care
-   about most, and mark that end (a dot of paint or tape) as the front.
+3. With the default `center_azimuth_deg = 0`, the test starts and ends with
+   the servo at 90°. Fit the pan-tilt kit so the camera looks along the
+   array's 0° mark (+X axis) at that position.
 
-4. Find that direction's azimuth. Start the service
-   (`sudo systemctl start doa-tracker`), stand where the horn points and talk.
-   Note the angle on the LCD or dashboard. In `doa_tracker.toml`, set
-   `center_azimuth_deg` to that angle.
+4. Check the direction. Start the service (`sudo systemctl start doa-tracker`),
+   stand in front of the camera and talk. The LCD or dashboard should read
+   close to 0°. If it doesn't, set `center_azimuth_deg` in
+   `doa_tracker.toml` to the angle it shows; the camera then covers that angle
+   ±90° and parks facing it.
 
-5. Talk from one side. If the front end turns away from you, set
+5. Talk from one side. If the camera turns away from you, set
    `direction = -1`.
 
 6. Apply the changes:
@@ -261,22 +277,36 @@ front end covers. Run these commands from `~/python_control`.
    sudo systemctl restart doa-tracker
    ```
 
-The `out_of_range` setting in `doa_tracker.toml` controls what happens with
-sounds behind the servo:
+The `out_of_range` setting in `doa_tracker.toml` controls what happens when
+the target is outside the camera's half:
 
-- `"flip"` (set in the shipped `doa_tracker.toml`): the rear end points at
-  them. The LCD footer then reads `servo 45° rear`, and the dashboard shows
-  `(rear end)` next to "Servo points at". When a source crosses into the other
-  half, the horn swings across to the other end. To stop it swinging back and
-  forth at the boundary, it only switches once the source is 10° past the edge.
-- `"clamp"`: the front end stays at the nearer end stop.
-- `"mirror"`: the front end points at the same angle reflected to the front.
+- `"park"` (the default): the camera returns to servo 90° (facing
+  `center_azimuth_deg`) and waits. The LCD footer reads `servo parked`, and
+  the dashboard shows "Sound is outside the camera's range; parked". To stop
+  it jumping back and forth at the edge, it only parks once the target is 10°
+  past 90° or 270°, and resumes as soon as the target is back inside.
+- `"clamp"`: the camera stays at the nearer end stop.
+- `"mirror"`: the camera points at the same angle reflected to the front.
+- `"flip"`: treats the horn as double-ended, so the rear end points at
+  sounds behind it. The camera faces away from those sounds, so this is only
+  useful without the camera.
 
-The camera rides on the pan servo, so it always looks where the **front** end
-points. In `"flip"` mode, a sound behind the servo turns the camera away from
-it. The camera can only find a drone in the front half. The dashboard shows
-"Sound is behind the camera" when this happens. Point the front end
-(`center_azimuth_deg`) toward where drones are expected.
+`camera_assist = true` (the default) hands the pan over from the sound
+direction to the camera once the tilt locks onto a drone. The LCD footer then
+shows `cam`, the dashboard adds "· camera" after the servo angle, and the log
+says "Pan servo now following the drone in the camera image". If the camera
+loses the drone for `lost_after_s`, the pan goes back to following the sound.
+Set it to `false` to steer the pan by sound only.
+
+The camera is not at the array centre: `camera_forward_cm` (7.5) is how far it
+sits along 0°, and `camera_right_cm` (5) is how far toward 270°, which is to
+the right when looking along 0°. While the pan follows the sound, it aims along
+the line from the camera to a point `sound_range_m` (10 m) out on the array's
+azimuth, so a sound straight ahead is aimed slightly left of 0°. Once the
+camera locks on, it follows the drone in the image and this offset is not
+applied again. The shift is under 1° at 10 m, so it only moves the horn once it
+exceeds `deadband_deg`, which happens inside about 2 m. Set `sound_range_m` to
+0 to ignore the offset, or to the range you expect.
 
 ### Tilt servo
 
@@ -309,29 +339,42 @@ at 15°, 45° and 75° cover 0° to 90° with some overlap.
 ## 8. Run the drone detector on the PC
 
 Detection runs on a PC on the same network, not on the Pi. The PC reads the
-camera feed from `http://respeaker.local:8765/camera.mjpg`. It runs a YOLO
-model on the newest frame and posts the boxes back to the Pi. The Pi converts
-each box into an elevation, using the tilt angle at the moment that frame was
-taken, and moves the tilt servo there. The boxes also appear on the dashboard's
-camera view.
+camera feed from `http://raspberrypi.local:8765/camera.mjpg`. It runs the
+YOLOv8 weights in `camera_detect/best.pt` on the newest frame and posts the
+boxes back to the Pi. The Pi turns each box into an azimuth and elevation from
+the pan and tilt pose when that frame was taken. The tilt servo follows the
+elevation and, with `camera_assist`, the pan servo follows the azimuth, which
+brings the drone to the centre of the frame. The boxes also appear on the
+dashboard's camera view.
 
-You need YOLO weights (a `.pt` file) trained to detect drones. The standard
-pretrained YOLO models don't have a drone class. Either train your own with
-Ultralytics on a drone dataset, or use a published drone-detection model.
+If a frame contains more than one box, the servos follow the one with the
+higher confidence. Every accepted sample is appended to `logs/drone_track.csv`
+(`time, frame, azimuth_deg, elevation_deg, confidence, label`), and the same
+angles are printed by the detector and the tracker whenever they move by 0.5°.
 
-On the PC (Windows PowerShell shown; macOS and Linux are the same apart from
-the activate line), from the `python_control` folder:
+The weights are a YOLOv8 model with two classes, `copter_drone` and
+`motor_drone`. Both count as the drone. The servos follow whichever box has
+the higher confidence.
+
+Run it from Windows. The `drone-yolov8` conda env is the miniforge env inside
+WSL (`~/miniforge3`), and `camera_detect\run_tracker.ps1` activates it there:
 
 ```powershell
-python -m venv .venv-detector
-.venv-detector\Scripts\activate
-pip install -r drone_detector\requirements.txt
-python -m drone_detector --pi http://respeaker.local:8765 --weights C:\path\to\drone.pt --show
+powershell -File camera_detect\run_tracker.ps1
+powershell -File camera_detect\run_tracker.ps1 http://192.168.1.50:8765
 ```
 
-For an NVIDIA GPU, install the CUDA build of PyTorch from
-[pytorch.org](https://pytorch.org/get-started/locally/) before the
-requirements file, and add `--device 0`.
+WSL does not resolve `raspberrypi.local`, so the script looks that name up on
+Windows and passes the IP into WSL. From a WSL shell the same command is:
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate drone-yolov8
+cd /mnt/c/Users/hanna/Desktop/reSpeakerFlex/reSpeaker_XVF3800_USB_4MIC_ARRAY/python_control
+python -m drone_detector --pi http://<pi-ip>:8765 --show
+```
+
+For an NVIDIA GPU inside WSL, add `--device 0`.
 
 Useful options:
 
@@ -345,10 +388,91 @@ Useful options:
 Every 10 seconds the detector logs how many frames per second it processes,
 the inference time, and how many frames contained a drone. While it's running,
 the dashboard's **Drone (camera)** section shows the model, its frame rate and
-any lock. The LCD's top-right corner switches from `EL 45° SCAN` to a green
-`EL 52° LOCK`. If the drone isn't detected for `lost_after_s` (2 s), the tilt
-goes back to scanning. If the PC detector stops, the Pi keeps scanning on its
-own.
+the lock, including the drone's azimuth and elevation. The LCD's top-right
+corner switches from `EL 45° SCAN` to a green `EL 52° LOCK`. If the drone isn't
+detected for `lost_after_s` (2 s), the tilt goes back to scanning and the pan
+goes back to following the sound. If the PC detector stops, the Pi keeps
+scanning on its own. Copy the updated `python_control` folder to the Pi and
+restart `doa-tracker` before relying on the track log or the pan follow.
+
+## 9. Listen for drones with a measurement microphone
+
+Plug a USB measurement microphone into any of the Pi's USB ports. You can do
+this while the tracker runs: it looks for a microphone every 5 seconds and
+starts within a few seconds of finding one. With `device = "auto"` in the
+`[acoustic]` section of `doa_tracker.toml`, it uses the first USB input whose
+name isn't the reSpeaker. If it picks the wrong one, run `arecord -l` and set
+`device` to part of the microphone's name.
+
+This guide uses an **Omnitronic MM-2USB**: flat from 20 Hz to 20 kHz,
+134 dB SPL maximum, 26 dBA self-noise, and a built-in 16-bit ADC at 44.1 kHz.
+The tracker opens it at its own 44.1 kHz (`sample_rate = 0`), because
+resampling adds false tones. A 16-bit ADC covers about 96 dB, so with full
+scale at 134 dB SPL its quietest step is about 38 dB SPL. That's louder than
+the mic's own 26 dBA self-noise, so a quiet room reads near -96 dBFS, the
+16-bit floor, and the spectrogram is mostly dark. This is normal. A drone
+within a few tens of metres is far louder.
+
+The dashboard then shows a **Spectrogram** strip under the 3D view: the last
+30 seconds from 0 to 4 kHz, newest on the right. The shaded band is the
+blade-pass search range. Use **Range** to change the contrast.
+
+Propellers hum at the blade-pass frequency (BPF), RPM ÷ 60 × number of blades,
+and at whole multiples of it. A Parrot Bebop 2 Power has 3-blade props at
+about 7,500 RPM in hover, so its BPF is about 375 Hz, rising to about 600 Hz
+at full throttle. The tracker looks for a tone between `bpf_min_hz` and
+`bpf_max_hz` (100–800 Hz) together with at least 3 of its first 5 harmonics.
+When the same BPF holds for 1.5 seconds, it flags a drone:
+
+- the dashboard badge turns red: `Drone BPF detected · 375 Hz · 7,500 RPM`,
+  dashed lines mark the harmonics, a red bar runs along the top of the
+  spectrogram while the flag is on, and the browser tab title changes,
+- the **Drone (acoustic)** section shows the BPF, motor RPM (using `blades`)
+  and how many harmonics matched,
+- the LCD's top-left label changes from `AZIMUTH` to a red `DRONE 375Hz`,
+- the log says `Drone BPF detected: 375.2 Hz (7504 RPM with 3 blades), 5/5
+  harmonics`.
+
+An amber `Possible BPF` badge means a harmonic comb is showing but hasn't
+held long enough yet. The flag clears 2 seconds (`hold_s`) after the comb
+fades.
+
+Steady sounds such as a cooling fan or mains hum fade into a learned
+background over about a minute (`background_s`), so they stop counting. The
+tracker learns the background in its first few seconds, so start it before
+the drone is flying. Keep the microphone away from the Pi's fan and the
+servos.
+
+Other tuning in `[acoustic]`:
+
+| Setting | Effect |
+|---|---|
+| `bpf_min_hz`, `bpf_max_hz` | narrow to your drone, for example 300–650 Hz for the Bebop 2 Power, to avoid other hums |
+| `blades` | propeller blades, used only to turn BPF into RPM |
+| `peak_db` | lower to hear fainter, more distant drones; raise if fans or voices trigger it |
+| `confirm_s` | longer means fewer false alarms but a slower flag |
+| `display_max_hz`, `history_s` | spectrogram height and length on the dashboard |
+| `spl_offset_db` | show the mic level in dB SPL instead of dBFS (see below) |
+
+### Showing the level in dB SPL
+
+By default the dashboard's **Mic level** and the spectrogram bar show dBFS
+(decibels below digital full scale). To show dB SPL instead, set
+`spl_offset_db` in `[acoustic]`. dB SPL is then dBFS + `spl_offset_db`. For
+the MM-2USB, start with `spl_offset_db = 134.0`, since full scale is reached at
+its 134 dB SPL maximum. That figure is approximate: it depends on the capture
+gain in `alsamixer` (leave the gain alone once calibrated). To calibrate:
+
+1. Put the mic next to a reference SPL meter in a steady sound, or fit a
+   94 dB SPL calibrator over the mic capsule.
+2. Note the dashboard's **Mic level** with `spl_offset_db = 0` (dBFS).
+3. Set `spl_offset_db` to the reference reading minus that dBFS value. For
+   example, 94 dB with -40.5 dBFS gives `134.5`.
+4. Run `sudo systemctl restart doa-tracker` and check that the two readings
+   now match.
+
+The level is the unweighted RMS of each 0.1 s block, so compare it with the
+meter's Z (flat) weighting rather than A weighting.
 
 ## Day-to-day use
 
@@ -392,8 +516,29 @@ reboot. Run `groups` and confirm `plugdev` is listed.
 SPI isn't enabled. Run `sudo raspi-config nonint do_spi 0` and reboot.
 
 **LCD stays black, or the picture is shifted**
-Check the BL wire is on pin 18. See the tuning table in
-`display_config/README.md` for `Y_OFFSET`, `ROTATION` and `SPI_BAUDRATE`.
+Check the BL wire is on pin 18. While the service runs, `pinctrl get 24`
+should show `op dh`; `ip pd` means nothing is driving the backlight, usually
+because the Pi still has an old `display_config/config.py` with `PIN_BL = 12`.
+See the tuning table in `display_config/README.md` for `Y_OFFSET`, `ROTATION`
+and `SPI_BAUDRATE`.
+
+**The spectrogram says `No USB microphone found`**
+Run `arecord -l`. If the microphone isn't listed, try another USB port or
+cable. If it's listed under a name without "USB", set `device` in `[acoustic]`
+to part of that name. `Device or resource busy` means another program has it
+open; stop that program.
+
+**The spectrogram is almost black and the mic level sits near -96 dBFS**
+In a quiet room this is normal for a 16-bit mic like the MM-2USB (step 9).
+Clap or talk near it: the level should jump by 30 dB or more. If it doesn't,
+the capture gain is at or near zero. Run `alsamixer`, press F6 to pick the USB
+microphone, press F4 for capture controls, and raise the level. Then run
+`sudo alsactl store` so it stays set after a reboot. Recalibrate
+`spl_offset_db` after changing the gain.
+
+**A fan, voice or engine sets off the drone flag**
+Narrow `bpf_min_hz`/`bpf_max_hz` to your drone, raise `peak_db` or
+`confirm_s`, or move the microphone away from the noise.
 
 **`--check` says `no hardware PWM for GPIO12` or `GPIO13`, or the dashboard
 shows a servo using "lgpio software PWM"**

@@ -39,11 +39,21 @@ min_pulse_us = 500         # pulse for servo 0 degrees; raise it if the SG90 buz
 max_pulse_us = 2400        # pulse for servo 180 degrees; lower it if the SG90 buzzes at the end stop
 center_azimuth_deg = 0.0   # array azimuth the horn faces at servo 90 degrees
 direction = 1              # -1 if the horn turns away from the sound
-# Sounds behind the servo (the SG90 only turns 180 degrees):
-# "flip"   - turn so the horn's rear end points at them; LCD and dashboard say which end (full 360)
+# Sources outside the half the SG90 can reach (center_azimuth_deg +/- 90 degrees):
+# "park"   - wait facing center_azimuth_deg (servo 90) until the source comes back within reach
+# "flip"   - turn so the horn's rear end points at them (full 360, but the camera then faces away)
 # "clamp"  - hold the horn at the nearest end stop
 # "mirror" - point at the same angle reflected to the front
-out_of_range = "flip"
+out_of_range = "park"
+# While the camera is locked on a drone, follow the drone's azimuth in the image instead of the sound.
+camera_assist = true
+# The pan-tilt camera is not at the array centre, so a sound's azimuth is not the heading
+# the camera must use. It sits this far along 0°, and this far toward 270° (right, looking along 0°).
+camera_forward_cm = 7.5
+camera_right_cm = 5.0
+# The sound is aimed as if it were this far from the array centre. Closer makes the offset
+# matter more; 0 ignores it. Set it near the range you expect drones at.
+sound_range_m = 10.0
 deadband_deg = 3.0         # ignore heading changes smaller than this
 max_speed_dps = 300.0      # slew limit, degrees per second
 release_after_s = 2.0      # stop pulses after this long still (quiet, no buzz); 0 holds torque
@@ -80,3 +90,30 @@ hflip = false              # set both flips to true if the camera is mounted ups
 vflip = false
 hfov_deg = 62.2            # IMX219 field of view, used to turn box positions into angles
 vfov_deg = 48.8
+
+[acoustic]
+# USB measurement microphone: live spectrogram on the dashboard, and a drone flag when a
+# propeller blade-pass frequency (BPF = RPM / 60 x blades) and its harmonics persist.
+# A hovering Parrot Bebop 2 Power (3-blade props, ~7,500 RPM) sits near 375 Hz; full throttle ~600 Hz.
+enabled = true
+device = "auto"            # "auto" = first USB input that isn't the reSpeaker; or part of the name, or an index
+sample_rate = 0            # 0 = the microphone's own rate (avoids resampling artefacts)
+fft_size = 8192            # ~5.4 Hz frequency resolution at 44.1 kHz
+hop_s = 0.1                # one spectrogram column every 0.1 s
+display_max_hz = 4000.0    # top of the dashboard spectrogram
+history_s = 30.0           # seconds of spectrogram the dashboard shows
+bpf_min_hz = 100.0         # blade-pass frequencies searched
+bpf_max_hz = 800.0
+harmonics = 5              # BPF multiples checked (1x ... 5x)
+min_harmonics = 3          # of those, how many must stand out (the 1x always must)
+peak_db = 6.0              # how far a harmonic must rise above the noise around it
+tolerance_pct = 3.0        # how far a harmonic may sit from an exact multiple (the four motors differ)
+confirm_s = 1.5            # the same BPF must hold this long before the drone is flagged
+hold_s = 2.0               # keep the flag this long after the signature fades
+background_s = 60.0        # steady sounds (fans, mains hum) fade into the background over about this long; 0 = off
+blades = 3                 # propeller blades, to turn BPF into motor RPM
+# Show the mic level as dB SPL instead of dBFS: dB SPL = dBFS + spl_offset_db. 0 = off (dBFS).
+# Omnitronic MM-2USB: about 134, since full scale is reached at its 134 dB SPL maximum. That is
+# approximate (it depends on the input gain set in alsamixer or Windows), so check it against a
+# reference SPL meter or a 94 dB calibrator and adjust until the readings match.
+spl_offset_db = 0.0

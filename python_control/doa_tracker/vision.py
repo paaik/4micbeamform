@@ -112,7 +112,8 @@ class FrameHub:
             self.result = result
             self._posts.append(now)
         self.state.set_module("vision", self.status(), notify=True)
-        return {"ok": True, "detections": len(detections)}
+        tracked = next((d for d in detections if d["elevation_deg"] is not None), None)
+        return {"ok": True, "detections": len(detections), "tracked": tracked}
 
     def latest_result(self):
         with self._lock:

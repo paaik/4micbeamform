@@ -5,3 +5,4 @@ smbus2>=0.4.3
 Adafruit-Blinka>=8.20.0
 adafruit-circuitpython-rgb-display>=3.4.0
 Pillow>=9.4.0
+sounddevice>=0.4.6

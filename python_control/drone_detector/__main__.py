@@ -1,7 +1,11 @@
 """Detect drones in the Pi camera stream on a PC and send the boxes back to the Pi.
 
-    python -m drone_detector --pi http://respeaker.local:8765 --weights drone.pt
-    python -m drone_detector --pi http://192.168.1.50:8765 --weights drone.pt --show
+    # drone-yolov8 is the miniforge env in WSL. From Windows, use camera_detect/run_tracker.ps1.
+    wsl -e bash -lc 'source ~/miniforge3/etc/profile.d/conda.sh && conda activate drone-yolov8 && python -m drone_detector --pi http://<pi-ip>:8765'
+    python -m drone_detector --pi http://192.168.1.50:8765 --show
+
+Weights default to camera_detect/best.pt. The Pi follows the highest-confidence
+box and answers each post with that drone's azimuth and elevation.
 
 The Pi serves its camera at /camera.mjpg with every frame numbered. This reads
 the stream, always running the model on the newest frame (older ones are
@@ -22,6 +26,8 @@ import urllib.request
 from pathlib import Path
 
 log = logging.getLogger("drone_detector")
+
+DEFAULT_WEIGHTS = Path(__file__).resolve().parent.parent / "camera_detect" / "best.pt"
 
 
 class StreamReader(threading.Thread):
@@ -97,10 +103,12 @@ def load_detector(args):
         result = model.predict(image, conf=args.conf, imgsz=args.imgsz, device=args.device,
                                classes=class_ids, verbose=False)[0]
         boxes = result.boxes
-        return [
+        found = [
             {"label": names[int(c)], "confidence": float(p), "box": [float(v) for v in xyxy]}
             for xyxy, p, c in zip(boxes.xyxyn.tolist(), boxes.conf.tolist(), boxes.cls.tolist())
         ]
+        found.sort(key=lambda det: det["confidence"], reverse=True)
+        return found
 
     return detect
 
@@ -121,8 +129,8 @@ def draw(image, detections):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog="drone_detector", description=__doc__.split("\n\n")[0])
-    parser.add_argument("--pi", default="http://respeaker.local:8765", help="tracker dashboard URL on the Pi")
-    parser.add_argument("--weights", required=True, help="YOLO weights trained to detect drones (.pt)")
+    parser.add_argument("--pi", default="http://raspberrypi.local:8765", help="tracker dashboard URL on the Pi")
+    parser.add_argument("--weights", default=str(DEFAULT_WEIGHTS), help="YOLO weights (default: camera_detect/best.pt)")
     parser.add_argument("--classes", nargs="+", help="only report these class names (default: all)")
     parser.add_argument("--conf", type=float, default=0.25, help="minimum confidence to report (default 0.25)")
     parser.add_argument("--imgsz", type=int, default=640, help="model input size (default 640)")
@@ -130,6 +138,30 @@ def parse_args(argv):
     parser.add_argument("--show", action="store_true", help="also show the annotated stream in a window")
     parser.add_argument("--verbose", action="store_true", help="debug logging")
     return parser.parse_args(argv)
+
+
+def log_track(tracked, detections, previous):
+    """Log the drone the Pi is following when its angle moves. Returns the angles just logged."""
+    if not tracked:
+        if detections and previous != "none":
+            log.info("Drone in frame (%s %.0f%%) but the Pi has no camera pose for it yet",
+                     detections[0]["label"], detections[0]["confidence"] * 100)
+            return "none"
+        return previous
+    azimuth, elevation = tracked.get("azimuth_deg"), tracked.get("elevation_deg")
+    # 0.5° steps, so pixel jitter doesn't print a line on every frame.
+    current = (None if azimuth is None else round(azimuth * 2) / 2,
+               None if elevation is None else round(elevation * 2) / 2)
+    if current == previous:
+        return previous
+    extra = ""
+    if len(detections) > 1:
+        extra = " (highest of {} detections)".format(len(detections))
+    log.info("Tracking %s %.0f%% at azimuth %s, elevation %s%s",
+             tracked.get("label", "drone"), tracked.get("confidence", 0) * 100,
+             "—" if azimuth is None else "{:.1f}°".format(azimuth),
+             "—" if elevation is None else "{:.1f}°".format(elevation), extra)
+    return current
 
 
 def main(argv=None, detector_factory=load_detector) -> int:
@@ -141,6 +173,9 @@ def main(argv=None, detector_factory=load_detector) -> int:
     import requests
 
     base = args.pi.rstrip("/")
+    if not Path(args.weights).is_file():
+        log.error("Weights not found: %s", args.weights)
+        return 2
     detect = detector_factory(args)
     model_name = Path(args.weights).name
     reader = StreamReader(base + "/camera.mjpg")
@@ -150,6 +185,8 @@ def main(argv=None, detector_factory=load_detector) -> int:
     seq = None
     window_start, processed, found, busy_ms = time.monotonic(), 0, 0, 0.0
     post_error = None
+    last_track = None
+    show = args.show
     try:
         while True:
             frame = reader.newest(seq, 1.0)
@@ -169,6 +206,7 @@ def main(argv=None, detector_factory=load_detector) -> int:
                 if reply.status_code != 200:
                     raise requests.RequestException("HTTP {}: {}".format(reply.status_code, reply.text[:120]))
                 post_error = None
+                last_track = log_track(reply.json().get("tracked"), detections, last_track)
             except requests.RequestException as exc:
                 if str(exc) != post_error:
                     log.warning("Could not send detections to the Pi: %s", exc)
@@ -177,10 +215,14 @@ def main(argv=None, detector_factory=load_detector) -> int:
             processed += 1
             found += bool(detections)
             busy_ms += inference_ms
-            if args.show:
-                cv2.imshow("drone_detector", draw(image, detections))
-                if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
-                    break
+            if show:
+                try:
+                    cv2.imshow("drone_detector", draw(image, detections))
+                    if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+                        break
+                except cv2.error as exc:
+                    log.warning("No video window (%s); continuing without it. The dashboard still shows the boxes.", exc)
+                    show = False
             elapsed = time.monotonic() - window_start
             if elapsed >= 10.0:
                 log.info("%.1f fps processed of %.1f fps received, %.0f ms per frame, drone in %d of %d frames",
@@ -191,7 +233,7 @@ def main(argv=None, detector_factory=load_detector) -> int:
         pass
     finally:
         reader.stop.set()
-        if args.show:
+        if show:
             cv2.destroyAllWindows()
     return 0
 

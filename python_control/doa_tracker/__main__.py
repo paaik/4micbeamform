@@ -1,4 +1,5 @@
-"""Run the tracker: poll the XVF3800, drive the pan/tilt servos, camera and LCD, and serve the dashboard.
+"""Run the tracker: poll the XVF3800, drive the pan/tilt servos, camera and LCD, listen for drone
+propellers on a USB measurement microphone, and serve the dashboard.
 
     python -m doa_tracker                      # everything in doa_tracker.toml
     python -m doa_tracker --no-servo --no-tilt --no-camera --no-lcd   # dashboard only (e.g. on a PC)
@@ -29,6 +30,8 @@ def parse_args(argv):
     parser.add_argument("--no-tilt", action="store_true", help="do not drive the tilt servo")
     parser.add_argument("--no-camera", action="store_true", help="do not stream the camera")
     parser.add_argument("--no-lcd", action="store_true", help="do not use the LCD")
+    parser.add_argument("--no-acoustic", action="store_true",
+                        help="do not capture the USB measurement microphone (spectrogram and drone BPF)")
     parser.add_argument("--no-dashboard", action="store_true", help="do not serve the web dashboard")
     parser.add_argument("--host", help="dashboard bind address")
     parser.add_argument("--port", type=int, help="dashboard port")
@@ -58,6 +61,8 @@ def load_settings(args) -> dict:
         settings["camera"]["enabled"] = False
     if args.no_lcd:
         settings["lcd"]["enabled"] = False
+    if args.no_acoustic:
+        settings["acoustic"]["enabled"] = False
     if args.no_dashboard:
         settings["dashboard"]["enabled"] = False
     if args.host:
@@ -134,11 +139,20 @@ def main(argv=None) -> int:
     else:
         state.set_module("lcd", {"enabled": False})
 
+    spectrum = None
+    if settings["acoustic"]["enabled"]:
+        from .acoustic import AcousticModule, SpectrumHub
+        spectrum = SpectrumHub(settings["acoustic"])
+        workers.append(threading.Thread(target=AcousticModule(settings["acoustic"], state, spectrum).run,
+                                        args=(stop,), name="acoustic"))
+    else:
+        state.set_module("acoustic", {"enabled": False})
+
     server = None
     if settings["dashboard"]["enabled"]:
         from .web import DashboardServer
         try:
-            server = DashboardServer(settings["dashboard"], state, stop, hub)
+            server = DashboardServer(settings["dashboard"], state, stop, hub, spectrum)
         except OSError as exc:
             log.error("Cannot serve the dashboard on port %s: %s", settings["dashboard"]["port"], exc)
             return 1

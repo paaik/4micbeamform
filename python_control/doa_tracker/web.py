@@ -2,6 +2,8 @@
 
 With the camera enabled it also serves the camera as MJPEG (/camera.mjpg, each
 part tagged X-Frame-Seq) and accepts detector results (POST /api/detections).
+With the measurement microphone enabled, /spectrum/events streams spectrogram
+columns (recent history first, then about 10 per second).
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ BOUNDARY = "frame"
 MAX_POST_BYTES = 65536
 
 
-def make_handler(state, stop: threading.Event, page: bytes, hub):
+def make_handler(state, stop: threading.Event, page: bytes, hub, spectrum=None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -51,6 +53,10 @@ def make_handler(state, stop: threading.Event, page: bytes, hub):
                 self._mjpeg()
             elif path == "/camera.jpg":
                 self._snapshot()
+            elif path == "/spectrum/events" and spectrum is None:
+                self.send_error(404, "Measurement microphone is disabled ([acoustic] enabled = false, or --no-acoustic)")
+            elif path == "/spectrum/events":
+                self._spectrum()
             elif path == "/favicon.ico":
                 self.send_response(204)
                 self.send_header("Content-Length", "0")
@@ -111,13 +117,41 @@ def make_handler(state, stop: threading.Event, page: bytes, hub):
             except OSError:
                 return
 
-        def _stream(self) -> None:
+        def _event_stream_headers(self) -> None:
             self.close_connection = True
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "close")
             self.end_headers()
+
+        def _spectrum(self) -> None:
+            self._event_stream_headers()
+            seq, meta_id = 0, None
+            last_write = time.monotonic()
+            try:
+                while not stop.is_set():
+                    meta, columns = spectrum.wait(seq, meta_id, 1.0)
+                    message = {}
+                    if meta is not None and meta["id"] != meta_id:
+                        message["meta"] = meta
+                        meta_id = meta["id"]
+                    if columns:
+                        message["cols"] = columns
+                        seq = columns[-1][0]
+                    if message:
+                        self.wfile.write("data: {}\n\n".format(json.dumps(message)).encode("utf-8"))
+                    elif time.monotonic() - last_write > KEEPALIVE_S:
+                        self.wfile.write(b": keepalive\n\n")
+                    else:
+                        continue
+                    self.wfile.flush()
+                    last_write = time.monotonic()
+            except OSError:
+                return
+
+        def _stream(self) -> None:
+            self._event_stream_headers()
             seq = None
             last_write = time.monotonic()
             try:
@@ -140,12 +174,12 @@ def make_handler(state, stop: threading.Event, page: bytes, hub):
 
 
 class DashboardServer:
-    def __init__(self, dashboard: dict, state, stop: threading.Event, hub=None):
+    def __init__(self, dashboard: dict, state, stop: threading.Event, hub=None, spectrum=None):
         self.host = dashboard["host"]
         self.port = dashboard["port"]
         self.camera = hub is not None
         page = PAGE_PATH.read_bytes()
-        self.server = ThreadingHTTPServer((self.host, self.port), make_handler(state, stop, page, hub))
+        self.server = ThreadingHTTPServer((self.host, self.port), make_handler(state, stop, page, hub, spectrum))
         self.thread = threading.Thread(target=self.server.serve_forever, name="dashboard", daemon=True)
 
     def start(self) -> None:
