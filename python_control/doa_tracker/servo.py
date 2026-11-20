@@ -197,9 +197,42 @@ def prepare_hardware(servos: list[dict], group: str) -> int:
     return 0
 
 
-def pan_positions(servo: dict) -> list[tuple[float, str]]:
-    return [(angle, "points at azimuth {:5.1f}°".format(pointing_azimuth(angle, servo)))
-            for angle in (90, 0, 90, 180, 90)]
+# Azimuths for the pan test, unwrapped so the sign gives the direction: counter-clockwise
+# 0 -> 90 -> 180, then clockwise 180 -> 90 -> 0 -> 270 (-90) -> 180 (-180).
+PAN_TEST_PATH = (0.0, 90.0, 180.0, 90.0, 0.0, -90.0, -180.0)
+PAN_TEST_DPS = 30.0
+PAN_TEST_PAUSE_S = 1.0
+
+
+def pan_test(servo: dict) -> int:
+    """Turn slowly through PAN_TEST_PATH, aiming like the tracker does (including the end swap in "flip" mode)."""
+    driver = open_driver(servo)
+    log.info("Servo on GPIO%d via %s; turning at %.0f°/s", servo["gpio"], driver.name, PAN_TEST_DPS)
+    step = PAN_TEST_DPS / UPDATE_HZ
+    max_turn = servo["max_speed_dps"] / UPDATE_HZ
+    azimuth, rear = PAN_TEST_PATH[0], False
+    angle = aim(azimuth, servo)[0]
+    try:
+        for goal in PAN_TEST_PATH:
+            while True:
+                azimuth = goal if abs(goal - azimuth) <= step else azimuth + math.copysign(step, goal - azimuth)
+                target, swapped = aim(azimuth % 360.0, servo, rear)
+                if swapped != rear:
+                    log.info("  azimuth %5.1f°: swapping to the %s end of the horn",
+                             azimuth % 360.0, "rear" if swapped else "front")
+                rear = swapped
+                angle += max(-max_turn, min(max_turn, target - angle))
+                driver.pulse(pulse_us(angle, servo))
+                if azimuth == goal and abs(target - angle) < 1e-6:
+                    break
+                time.sleep(1.0 / UPDATE_HZ)
+            log.info("azimuth %5.1f°  servo %5.1f°  pulse %4.0f us  %s end points at %5.1f°",
+                     goal % 360.0, angle, pulse_us(angle, servo), "rear" if rear else "front",
+                     pointing_azimuth(angle, servo, rear))
+            time.sleep(PAN_TEST_PAUSE_S)
+    finally:
+        driver.close()
+    return 0
 
 
 def sweep(servo: dict, positions: list[tuple[float, str]]) -> int:

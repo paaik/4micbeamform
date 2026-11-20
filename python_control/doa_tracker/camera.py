@@ -12,6 +12,7 @@ import collections
 import io
 import logging
 import math
+import os
 import threading
 import time
 
@@ -44,6 +45,7 @@ class FrameSink(io.BufferedIOBase):
 
 def open_camera(camera: dict, sink: FrameSink):
     """Start Picamera2 recording JPEGs into `sink`; returns an object with stop()."""
+    os.environ.setdefault("LIBCAMERA_LOG_LEVELS", "*:WARN")
     from libcamera import Transform
     from picamera2 import Picamera2
     from picamera2.encoders import JpegEncoder

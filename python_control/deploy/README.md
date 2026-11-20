@@ -232,15 +232,20 @@ front end covers. Run these commands from `~/python_control`.
    sudo .venv/bin/python -m doa_tracker --servo-test
    ```
 
-   It moves to 90, 0, 90, 180 and back to 90 degrees, printing the pulse width
-   for each. It needs `sudo` because the PWM channel is only handed to your
-   user while the service is starting. If the servo buzzes or strains at either end, open
-   `doa_tracker.toml` and raise `min_pulse_us` or lower `max_pulse_us` by about
-   100 µs, then sweep again.
+   It turns the horn slowly (30°/s) through azimuths 0°, 90° and 180°
+   counter-clockwise, then clockwise back through 90° and 0° to 270° and 180°.
+   It aims exactly as the tracker does, so azimuths the front end can't reach
+   use the rear end. Each swap is logged ("swapping to the rear end of the
+   horn"), and the horn swings across at `max_speed_dps`. At each stop it
+   prints the servo angle, pulse width and which end points where. It needs
+   `sudo` because the PWM channel is only handed to your user while the
+   service is starting. If the servo buzzes or strains at either end, open
+   `doa_tracker.toml` and raise `min_pulse_us` or lower `max_pulse_us` by
+   about 100 µs, then run it again.
 
-3. Leave the servo at 90° (where the sweep ends). Fit the double-ended horn so
-   one end faces the direction you care about most, and mark that end (a dot
-   of paint or tape) as the front.
+3. With the default `center_azimuth_deg = 0` and `"flip"` mode, the test
+   starts and ends with the servo at 90°. Fit the double-ended horn so one end faces the direction you care
+   about most, and mark that end (a dot of paint or tape) as the front.
 
 4. Find that direction's azimuth. Start the service
    (`sudo systemctl start doa-tracker`), stand where the horn points and talk.
@@ -397,6 +402,25 @@ twitches. Check that `/boot/firmware/config.txt` ends with
 `dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4` under `[all]`, then
 reboot. If the installer warned about a different `dtoverlay=pwm` line,
 replace that line with this one.
+
+**`/camera.mjpg` returns 404**
+First check the address uses the Pi's real hostname: the part after the `@` in
+the Pi's prompt (`user@raspberrypi` means `http://raspberrypi.local:8765/`).
+Then, on the Pi, run `curl -s http://localhost:8765/camera.mjpg | head -c 300`:
+
+- `Camera is disabled ...`: set `enabled = true` under `[camera]` in the
+  `doa_tracker.toml` the service uses, then restart it.
+- A plain `Not Found` page: the service is running older code. Run
+  `systemctl cat doa-tracker | grep -E 'WorkingDirectory|ExecStart'` to see
+  which folder it runs from. If that isn't where you copied the new files,
+  rerun `sudo bash deploy/install_pi.sh` from the new folder. Either way,
+  finish with `sudo systemctl restart doa-tracker`.
+- Binary JPEG data: the stream works on the Pi, so the laptop is reaching a
+  different address. Use the IP from `hostname -I`.
+
+`--check` may print libcamera's `Unable to set controls: Device or resource
+busy` while the service is running. That only means the service already has
+the camera open.
 
 **`camera  no camera found`**
 Check the ribbon cable is the Pi 5 type, fully inserted, and facing the right

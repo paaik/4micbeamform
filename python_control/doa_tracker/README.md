@@ -80,7 +80,8 @@ See step 7 of [`../deploy/README.md`](../deploy/README.md). For the tilt servo,
 `--servo-test tilt` sweeps the elevation range, `level_servo_deg` is the servo
 angle that holds the camera level, and `direction = -1` reverses it. For the
 pan servo:
-`--servo-test` sweeps the servo, `center_azimuth_deg` sets the azimuth the
+`--servo-test` turns the horn slowly through azimuths 0, 90, 180, 90, 0, 270
+and 180, `center_azimuth_deg` sets the azimuth the
 horn faces at servo 90°, and `direction = -1` reverses it. With
 `out_of_range = "flip"`, the horn's rear end points at sounds the front end
 can't reach, which covers the full 360°. The dashboard's 0°

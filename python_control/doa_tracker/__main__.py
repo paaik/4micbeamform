@@ -3,7 +3,7 @@
     python -m doa_tracker                      # everything in doa_tracker.toml
     python -m doa_tracker --no-servo --no-tilt --no-camera --no-lcd   # dashboard only (e.g. on a PC)
     python -m doa_tracker --check              # report what is reachable
-    python -m doa_tracker --servo-test         # sweep the pan servo through 0/90/180
+    python -m doa_tracker --servo-test         # turn the pan servo through azimuths 0, 90, 180, 90, 0, 270, 180
     python -m doa_tracker --servo-test tilt    # sweep the tilt servo through its elevation range
 """
 
@@ -89,12 +89,12 @@ def main(argv=None) -> int:
         from .check import run
         return run(settings)
     if args.servo_test:
-        from .servo import ServoError, pan_positions, sweep
+        from .servo import ServoError, pan_test, sweep
         from .tilt import sweep_positions
-        cfg = settings["servo"] if args.servo_test == "pan" else settings["tilt"]
-        positions = pan_positions(cfg) if args.servo_test == "pan" else sweep_positions(cfg)
         try:
-            return sweep(cfg, positions)
+            if args.servo_test == "pan":
+                return pan_test(settings["servo"])
+            return sweep(settings["tilt"], sweep_positions(settings["tilt"]))
         except (ServoError, OSError) as exc:
             log.error("Servo test failed: %s", exc)
             return 1

@@ -55,6 +55,9 @@ def run(settings: dict) -> int:
 
 
 def check_camera() -> tuple[bool, str]:
+    # Listing cameras while the tracker service streams makes libcamera log a harmless
+    # "Device or resource busy"; keep its log output to fatal errors here.
+    os.environ.setdefault("LIBCAMERA_LOG_LEVELS", "*:FATAL")
     try:
         from picamera2 import Picamera2
     except ImportError:
@@ -62,7 +65,10 @@ def check_camera() -> tuple[bool, str]:
     cameras = Picamera2.global_camera_info()
     if not cameras:
         return False, "no camera found; check the ribbon cable (Pi 5 needs a 22-to-15 pin cable)"
-    return True, ", ".join("{} on {}".format(c.get("Model"), c.get("Location", c.get("Id"))) for c in cameras)
+    names = ", ".join("{} (camera {})".format(c.get("Model"), c.get("Num", 0)) for c in cameras)
+    if subprocess.run(["systemctl", "is-active", "--quiet", "doa-tracker"], check=False).returncode == 0:
+        names += "; doa-tracker.service is running and should be streaming it"
+    return True, names
 
 
 def check_servo(label: str, servo: dict) -> bool:

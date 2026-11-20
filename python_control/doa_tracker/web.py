@@ -46,7 +46,7 @@ def make_handler(state, stop: threading.Event, page: bytes, hub):
             elif path == "/events":
                 self._stream()
             elif path in ("/camera.mjpg", "/camera.jpg") and hub is None:
-                self.send_error(404, "Camera is disabled")
+                self.send_error(404, "Camera is disabled ([camera] enabled = false in doa_tracker.toml, or --no-camera)")
             elif path == "/camera.mjpg":
                 self._mjpeg()
             elif path == "/camera.jpg":
@@ -143,6 +143,7 @@ class DashboardServer:
     def __init__(self, dashboard: dict, state, stop: threading.Event, hub=None):
         self.host = dashboard["host"]
         self.port = dashboard["port"]
+        self.camera = hub is not None
         page = PAGE_PATH.read_bytes()
         self.server = ThreadingHTTPServer((self.host, self.port), make_handler(state, stop, page, hub))
         self.thread = threading.Thread(target=self.server.serve_forever, name="dashboard", daemon=True)
@@ -151,6 +152,10 @@ class DashboardServer:
         self.thread.start()
         for url in self.urls():
             log.info("Dashboard at %s", url)
+        if self.camera:
+            log.info("Camera stream at %scamera.mjpg", self.urls()[-1])
+        else:
+            log.info("Camera disabled; /camera.mjpg will return 404")
 
     def urls(self) -> list[str]:
         if self.host not in ("0.0.0.0", "::", ""):
