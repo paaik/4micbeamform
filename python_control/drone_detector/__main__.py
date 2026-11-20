@@ -48,7 +48,7 @@ class StreamReader(threading.Thread):
                     log.info("Receiving %s", self.url)
                     self._read(stream)
             except (OSError, ValueError) as exc:
-                log.warning("Camera stream unavailable (%s); retrying in 2 s", exc)
+                log.warning("Camera stream %s unavailable (%s); retrying in 2 s", self.url, exc)
             self.stop.wait(2.0)
 
     def _read(self, stream) -> None:

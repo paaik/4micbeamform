@@ -86,8 +86,8 @@ width = 1280
 height = 960               # keep 4:3 so the picture uses the sensor's full field of view
 fps = 15
 jpeg_quality = 75          # lower width/height/quality if the stream stutters over Wi-Fi
-hflip = false              # set both flips to true if the camera is mounted upside down
-vflip = false
+hflip = true               # this camera is mounted upside down; both flips turn the picture upright
+vflip = true
 hfov_deg = 62.2            # IMX219 field of view, used to turn box positions into angles
 vfov_deg = 48.8
 

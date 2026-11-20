@@ -106,8 +106,10 @@ the Pi 5 camera cable. Lift the connector latch, insert the cable, and press
 the latch closed. Raspberry Pi's
 [camera installation guide](https://www.raspberrypi.com/documentation/accessories/camera.html#install-a-raspberry-pi-camera)
 shows which way the contacts face. Mount the camera on the tilt plate of the
-pan-tilt kit. If the picture comes out upside down later, set `hflip` and
-`vflip` to `true` in `doa_tracker.toml`.
+pan-tilt kit. This camera's cable leaves it mounted upside down, so the shipped
+`doa_tracker.toml` sets `hflip` and `vflip` to `true`. That rotates the picture
+180° before it is streamed, so the dashboard, the detector and the servo angles
+all see an upright image. Set both back to `false` if a later mount is upright.
 
 Connect the reSpeaker according to its firmware:
 
