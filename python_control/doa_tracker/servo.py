@@ -272,15 +272,22 @@ def pan_test(servo: dict) -> int:
 
 
 def sweep(servo: dict, positions: list[tuple[float, str]]) -> int:
-    """Step through (servo angle, description) pairs so the horn and pulse limits can be checked."""
+    """Move through (servo angle, description) pairs at 20°/s, so a tilt test cannot slam into the stop."""
     driver = open_driver(servo)
-    log.info("Servo on GPIO%d via %s", servo["gpio"], driver.name)
+    speed = 20.0
+    log.info("Servo on GPIO%d via %s, moving at %.0f°/s", servo["gpio"], driver.name, speed)
+    angle = positions[0][0]
     try:
-        for angle, description in positions:
-            width = pulse_us(angle, servo)
-            log.info("servo %5.1f°  pulse %4.0f us  %s", angle, width, description)
-            driver.pulse(width)
-            time.sleep(1.5)
+        driver.pulse(pulse_us(angle, servo))
+        for goal, description in positions:
+            while abs(goal - angle) > 0.05:
+                step = math.copysign(min(speed / UPDATE_HZ, abs(goal - angle)), goal - angle)
+                angle += step
+                driver.pulse(pulse_us(angle, servo))
+                time.sleep(1.0 / UPDATE_HZ)
+            angle = goal
+            log.info("servo %5.1f°  pulse %4.0f us  %s", angle, pulse_us(angle, servo), description)
+            time.sleep(1.0)
     finally:
         driver.close()
     return 0

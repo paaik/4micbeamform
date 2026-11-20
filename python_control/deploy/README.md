@@ -322,8 +322,10 @@ servo turns to tilt the camera up.
    sudo .venv/bin/python -m doa_tracker --servo-test tilt
    ```
 
-   It moves to elevation 0°, 45°, 90°, 45°, 0°, and prints the servo angle for
-   each.
+   It moves slowly (20°/s) to the lowest elevation, the middle, the highest, and
+   back, and prints the servo angle and pulse at each stop. With the Adafruit
+   1967 settings that is elevation 0°, 35°, 70°, 35°, 0°. Press Ctrl+C if the
+   arm starts to touch the pan body.
 
 2. At elevation 0° the camera should look level at the horizon. If it doesn't,
    change `level_servo_deg` in the `[tilt]` section of `doa_tracker.toml` and
