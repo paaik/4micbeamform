@@ -58,6 +58,14 @@ def run(settings: dict) -> int:
         line(ok, "mic", detail)
     else:
         line(None, "mic", "disabled")
+
+    if settings["cloud"]["enabled"]:
+        from .cloud import check_connection
+        ok, detail = check_connection(settings["cloud"])
+        failed |= not ok
+        line(ok, "cloud", detail)
+    else:
+        line(None, "cloud", "disabled")
     return 1 if failed else 0
 
 

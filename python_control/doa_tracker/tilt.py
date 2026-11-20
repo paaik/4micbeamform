@@ -48,10 +48,11 @@ def sweep_positions(tilt: dict) -> list[tuple[float, str]]:
 
 
 class TiltController:
-    def __init__(self, tilt: dict, state, hub=None):
+    def __init__(self, tilt: dict, state, hub=None, cloud=None):
         self.cfg = tilt
         self.state = state
         self.hub = hub
+        self.cloud = cloud
         self.scan = sorted(float(e) for e in tilt["scan_elevations"])
         self.scan_index = 0
         self.scan_step = 1
@@ -145,6 +146,9 @@ class TiltController:
                      "—" if azimuth is None else "{:6.1f}°".format(azimuth),
                      detection["elevation_deg"], detection["label"], detection["confidence"] * 100)
             self.last_logged = (azimuth, detection["elevation_deg"])
+        if self.cloud is not None:
+            self.cloud.submit(detection.get("label") or "unknown", azimuth, detection.get("elevation_deg"),
+                              confidence=detection.get("confidence"), frame=seq)
         try:
             if self.track_log is None:
                 TRACK_LOG.parent.mkdir(parents=True, exist_ok=True)

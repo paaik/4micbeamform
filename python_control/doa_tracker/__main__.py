@@ -6,6 +6,7 @@ propellers on a USB measurement microphone, and serve the dashboard.
     python -m doa_tracker --check              # report what is reachable
     python -m doa_tracker --servo-test         # turn the pan servo through azimuths 0, 90, 180, 90, 0, 270, 180
     python -m doa_tracker --servo-test tilt    # sweep the tilt servo through its elevation range
+    python -m doa_tracker --cloud-test         # send one test row to Supabase
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ def parse_args(argv):
     parser.add_argument("--no-acoustic", action="store_true",
                         help="do not capture the USB measurement microphone (spectrogram and drone BPF)")
     parser.add_argument("--no-dashboard", action="store_true", help="do not serve the web dashboard")
+    parser.add_argument("--no-cloud", action="store_true", help="do not upload the drone track to Supabase")
     parser.add_argument("--host", help="dashboard bind address")
     parser.add_argument("--port", type=int, help="dashboard port")
     parser.add_argument("--poll-hz", type=float, help="control poll rate")
@@ -42,6 +44,8 @@ def parse_args(argv):
     mode.add_argument("--check", action="store_true", help="report device, LCD, camera and servo readiness, then exit")
     mode.add_argument("--servo-test", nargs="?", const="pan", choices=("pan", "tilt"),
                       help="sweep the pan (default) or tilt servo to check pulse limits, then exit")
+    mode.add_argument("--cloud-test", action="store_true",
+                      help="upload one test detection with a photo to Supabase, then exit")
     mode.add_argument("--prepare-hardware", action="store_true",
                       help="(root) export the servo PWM channels for --group, then exit")
     parser.add_argument("--group", default="gpio", help="group given access by --prepare-hardware")
@@ -65,6 +69,8 @@ def load_settings(args) -> dict:
         settings["acoustic"]["enabled"] = False
     if args.no_dashboard:
         settings["dashboard"]["enabled"] = False
+    if args.no_cloud:
+        settings["cloud"]["enabled"] = False
     if args.host:
         settings["dashboard"]["host"] = args.host
     if args.port:
@@ -93,6 +99,9 @@ def main(argv=None) -> int:
     if args.check:
         from .check import run
         return run(settings)
+    if args.cloud_test:
+        from .cloud import send_test
+        return send_test(settings["cloud"])
     if args.servo_test:
         from .servo import ServoError, pan_test, sweep
         from .tilt import sweep_positions
@@ -126,9 +135,17 @@ def main(argv=None) -> int:
     else:
         state.set_module("camera", {"enabled": False})
 
+    cloud = None
+    if settings["cloud"]["enabled"]:
+        from .cloud import CloudUploader
+        cloud = CloudUploader(settings["cloud"], state)
+        workers.append(threading.Thread(target=cloud.run, args=(stop,), name="cloud"))
+    else:
+        state.set_module("cloud", {"enabled": False})
+
     if settings["tilt"]["enabled"]:
         from .tilt import TiltController
-        workers.append(threading.Thread(target=TiltController(settings["tilt"], state, hub).run,
+        workers.append(threading.Thread(target=TiltController(settings["tilt"], state, hub, cloud).run,
                                         args=(stop,), name="tilt"))
     else:
         state.set_module("tilt", {"enabled": False})

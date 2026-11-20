@@ -14,7 +14,9 @@ One service that reads the XVF3800's beamformed azimuth and:
   blade-pass frequency and its harmonics persist (`acoustic.py`, `[acoustic]`
   in `doa_tracker.toml`),
 - serves the live 3D dashboard, with the camera feed, detection boxes and
-  spectrogram, at `http://<pi>.local:8765/`.
+  spectrogram, at `http://<pi>.local:8765/`,
+- uploads each locked drone sample to Supabase (`cloud.py`, `[cloud]` in
+  `doa_tracker.toml`) as well as `logs/drone_track.csv`.
 
 Each part runs on its own thread. If the LCD, a servo, the camera or the microphone is missing
 or fails, the others keep running and the dashboard shows the error.

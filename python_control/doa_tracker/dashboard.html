@@ -257,6 +257,7 @@
       <tr><td>Camera</td><td id="camera-state">—</td></tr>
       <tr><td>Measurement mic</td><td id="mic-state">—</td></tr>
       <tr><td>LCD</td><td id="lcd-state">—</td></tr>
+      <tr><td>Cloud log</td><td id="cloud-state">—</td></tr>
     </table>
 
     <h2>Drone (acoustic)</h2>
@@ -390,6 +391,12 @@ function applyModules(sample) {
     ? camera.model + " · " + camera.width + "×" + camera.height + " · " + camera.fps + " fps" : "Starting");
   applyVision(modules, servo);
   applyAcoustic(modules.acoustic);
+  const cloud = modules.cloud;
+  const cloudReady = cloud
+    ? (cloud.sent || 0) + " sent" + (cloud.queued ? " · " + cloud.queued + " waiting" : "")
+      + (cloud.dropped ? " · " + cloud.dropped + " dropped" : "")
+    : "Starting";
+  document.getElementById("cloud-state").textContent = moduleText(cloud, cloudReady);
 }
 
 function applyVision(modules, servo) {

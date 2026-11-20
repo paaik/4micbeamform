@@ -120,3 +120,18 @@ blades = 3                 # propeller blades, to turn BPF into motor RPM
 # approximate (it depends on the input gain set in alsamixer or Windows), so check it against a
 # reference SPL meter or a 94 dB calibrator and adjust until the readings match.
 spl_offset_db = 0.0
+
+[cloud]
+# Each locked drone sample (the same rows as logs/drone_track.csv) is uploaded to Supabase.
+# Run supabase_setup.sql in the Supabase SQL Editor once. Put the anon key in cloud.env:
+#   SUPABASE_KEY=...
+# Test with: python -m doa_tracker --cloud-test
+enabled = true
+url = "https://cpprovvhjlyiyjhllvzg.supabase.co"
+table = "detections"
+bucket = "photos"
+device_id = "drone-detector-1"
+auto_rows = false          # true also stores the sound azimuth once a second, labeled "sound"
+sample_interval_s = 1.0
+upload_interval_s = 5.0    # send queued rows in one batch this often
+max_queue = 5000           # rows kept while offline; the oldest are dropped past this

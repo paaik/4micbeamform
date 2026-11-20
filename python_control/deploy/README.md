@@ -493,6 +493,23 @@ meter's Z (flat) weighting rather than A weighting.
 LCD orientation, offsets and SPI speed are set in `display_config/config.py`,
 not in `doa_tracker.toml`.
 
+### Supabase track log
+
+`[cloud]` uploads the same samples that `logs/drone_track.csv` stores: time,
+drone type, azimuth, elevation, confidence, and frame. They are sent in batches
+while a drone is locked. A missing network keeps the rows queued and the rest
+of the tracker running.
+
+1. In the Supabase SQL Editor, run `supabase_setup.sql`. Running it again adds
+   the `confidence` and `frame` columns and does not delete existing rows.
+2. Copy `cloud.env.example` to `cloud.env` and set `SUPABASE_KEY` to the
+   project's anon or publishable key.
+3. Stop the service and run `.venv/bin/python -m doa_tracker --cloud-test`.
+   One row labeled `test` should appear in Table Editor → `detections`, and a
+   picture in Storage → `photos`.
+4. `sudo systemctl restart doa-tracker`. The dashboard's **Cloud log** line
+   shows how many rows have been sent.
+
 ### Updating the project
 
 Copy the new `python_control` folder over the old one (step 2), then:

@@ -97,6 +97,18 @@ DEFAULTS = {
         "blades": 3,
         "spl_offset_db": 0.0,
     },
+    "cloud": {
+        "enabled": False,
+        "url": "",
+        "table": "detections",
+        "bucket": "photos",
+        "key_env": "SUPABASE_KEY",
+        "device_id": "drone-detector-1",
+        "auto_rows": False,
+        "sample_interval_s": 1.0,
+        "upload_interval_s": 5.0,
+        "max_queue": 5000,
+    },
 }
 
 CHOICES = {
@@ -201,3 +213,12 @@ def validate(settings: dict) -> None:
     offset = acoustic["spl_offset_db"]
     if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not 0 <= offset <= 200:
         raise ValueError("acoustic.spl_offset_db must be a number from 0 (off, show dBFS) to 200")
+
+    cloud = settings["cloud"]
+    if cloud["enabled"] and not str(cloud["url"]).startswith("https://"):
+        raise ValueError("cloud.url must be your Supabase project URL (https://...) when cloud.enabled = true")
+    for key in ("table", "bucket", "key_env", "device_id"):
+        if not isinstance(cloud[key], str) or not cloud[key].strip():
+            raise ValueError("cloud.{} must be a non-empty name".format(key))
+    if cloud["sample_interval_s"] <= 0 or cloud["upload_interval_s"] <= 0 or cloud["max_queue"] < 1:
+        raise ValueError("cloud intervals must be positive and cloud.max_queue at least 1")
