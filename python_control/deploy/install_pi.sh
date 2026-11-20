@@ -23,20 +23,45 @@ echo "==> Installing system packages"
 apt-get update
 apt-get install -y python3-venv python3-dev build-essential python3-lgpio python3-spidev \
     python3-numpy libusb-1.0-0 fonts-dejavu-core i2c-tools
+apt-get install -y --no-install-recommends python3-picamera2
 
 echo "==> Enabling SPI (LCD) and I2C (reSpeaker I2S firmware control)"
 raspi-config nonint do_spi 0
 raspi-config nonint do_i2c 0
+if grep -q "^camera_auto_detect=0" "$BOOT_CONFIG"; then
+    echo "!! camera_auto_detect=0 in $BOOT_CONFIG; set it to 1 so the Camera v2 is found" >&2
+fi
 
-SERVO_GPIO="$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb")).get("servo", {}).get("gpio", 13))' "$APP_DIR/doa_tracker.toml")"
-OVERLAY="dtoverlay=pwm,pin=${SERVO_GPIO},func=4"
-if grep -q "^dtoverlay=pwm," "$BOOT_CONFIG"; then
-    if ! grep -qx "$OVERLAY" "$BOOT_CONFIG"; then
-        echo "!! $BOOT_CONFIG already has a different pwm overlay; set it to: $OVERLAY" >&2
-    fi
+# One hardware PWM channel per servo: GPIO12/13 use function 4, GPIO18/19 function 2.
+OVERLAY="$(python3 - "$APP_DIR/doa_tracker.toml" <<'PY'
+import sys, tomllib
+cfg = tomllib.load(open(sys.argv[1], "rb"))
+func = {12: 4, 13: 4, 18: 2, 19: 2}
+pins = set()
+for section, default in (("servo", 13), ("tilt", 12)):
+    servo = cfg.get(section, {})
+    if servo.get("enabled", True) and servo.get("backend", "auto") != "software":
+        pins.add(int(servo.get("gpio", default)))
+pins = sorted(p for p in pins if p in func)
+if len(pins) == 1:
+    print("dtoverlay=pwm,pin={},func={}".format(pins[0], func[pins[0]]))
+elif len(pins) == 2:
+    print("dtoverlay=pwm-2chan,pin={},func={},pin2={},func2={}".format(pins[0], func[pins[0]], pins[1], func[pins[1]]))
+PY
+)"
+MARK="# reSpeaker tracker servo"
+if [[ -z "$OVERLAY" ]]; then
+    echo "==> No servo on a hardware PWM pin; skipping the pwm overlay"
+elif grep -qx "$OVERLAY" "$BOOT_CONFIG"; then
+    echo "==> $BOOT_CONFIG already has $OVERLAY"
+elif grep -qx "$MARK" "$BOOT_CONFIG"; then
+    echo "==> Updating the servo PWM overlay in $BOOT_CONFIG to $OVERLAY"
+    sed -i "/^${MARK}\$/{n;s/^dtoverlay=pwm.*\$/${OVERLAY}/;}" "$BOOT_CONFIG"
+elif grep -q "^dtoverlay=pwm" "$BOOT_CONFIG"; then
+    echo "!! $BOOT_CONFIG already has a different pwm overlay; replace it with: $OVERLAY" >&2
 else
-    echo "==> Routing GPIO${SERVO_GPIO} to hardware PWM in $BOOT_CONFIG"
-    printf '\n[all]\n# reSpeaker tracker servo\n%s\n' "$OVERLAY" >> "$BOOT_CONFIG"
+    echo "==> Routing the servo pins to hardware PWM in $BOOT_CONFIG"
+    printf '\n[all]\n%s\n%s\n' "$MARK" "$OVERLAY" >> "$BOOT_CONFIG"
 fi
 
 echo "==> Creating the Python environment in $APP_DIR/.venv"
@@ -48,7 +73,7 @@ echo "==> USB permissions and groups"
 install -m 0644 "$APP_DIR/deploy/99-respeaker-xvf3800.rules" /etc/udev/rules.d/
 udevadm control --reload-rules
 udevadm trigger --subsystem-match=usb
-usermod -aG gpio,spi,i2c,plugdev "$SERVICE_USER"
+usermod -aG gpio,spi,i2c,plugdev,video "$SERVICE_USER"
 
 echo "==> Installing doa-tracker.service"
 sed -e "s|@USER@|$SERVICE_USER|g" -e "s|@APP_DIR@|$APP_DIR|g" \
@@ -65,4 +90,5 @@ Then check:
   systemctl status doa-tracker
   journalctl -u doa-tracker -f
 Dashboard: http://$(hostname).local:8765/
+Camera stream for the PC detector: http://$(hostname).local:8765/camera.mjpg
 EOF

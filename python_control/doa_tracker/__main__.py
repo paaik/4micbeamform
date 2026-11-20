@@ -1,9 +1,10 @@
-"""Run the tracker: poll the XVF3800, drive the servo and LCD, and serve the dashboard.
+"""Run the tracker: poll the XVF3800, drive the pan/tilt servos, camera and LCD, and serve the dashboard.
 
     python -m doa_tracker                      # everything in doa_tracker.toml
-    python -m doa_tracker --no-servo --no-lcd  # dashboard only (e.g. on a PC)
+    python -m doa_tracker --no-servo --no-tilt --no-camera --no-lcd   # dashboard only (e.g. on a PC)
     python -m doa_tracker --check              # report what is reachable
-    python -m doa_tracker --servo-test         # sweep the servo through 0/90/180
+    python -m doa_tracker --servo-test         # sweep the pan servo through 0/90/180
+    python -m doa_tracker --servo-test tilt    # sweep the tilt servo through its elevation range
 """
 
 from __future__ import annotations
@@ -24,7 +25,9 @@ log = logging.getLogger("doa_tracker")
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog="doa_tracker", description="reSpeaker XVF3800 direction tracker")
     parser.add_argument("--config", help="TOML settings file (default: doa_tracker.toml next to this package)")
-    parser.add_argument("--no-servo", action="store_true", help="do not drive the servo")
+    parser.add_argument("--no-servo", action="store_true", help="do not drive the pan servo")
+    parser.add_argument("--no-tilt", action="store_true", help="do not drive the tilt servo")
+    parser.add_argument("--no-camera", action="store_true", help="do not stream the camera")
     parser.add_argument("--no-lcd", action="store_true", help="do not use the LCD")
     parser.add_argument("--no-dashboard", action="store_true", help="do not serve the web dashboard")
     parser.add_argument("--host", help="dashboard bind address")
@@ -33,10 +36,11 @@ def parse_args(argv):
     parser.add_argument("--open-browser", action="store_true", help="open the dashboard in a browser")
     parser.add_argument("--verbose", action="store_true", help="debug logging")
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--check", action="store_true", help="report device, LCD and servo readiness, then exit")
-    mode.add_argument("--servo-test", action="store_true", help="sweep the servo to check pulse limits, then exit")
+    mode.add_argument("--check", action="store_true", help="report device, LCD, camera and servo readiness, then exit")
+    mode.add_argument("--servo-test", nargs="?", const="pan", choices=("pan", "tilt"),
+                      help="sweep the pan (default) or tilt servo to check pulse limits, then exit")
     mode.add_argument("--prepare-hardware", action="store_true",
-                      help="(root) export the servo PWM channel for --group, then exit")
+                      help="(root) export the servo PWM channels for --group, then exit")
     parser.add_argument("--group", default="gpio", help="group given access by --prepare-hardware")
     return parser.parse_args(argv)
 
@@ -48,6 +52,10 @@ def load_settings(args) -> dict:
     settings = config.load(path)
     if args.no_servo:
         settings["servo"]["enabled"] = False
+    if args.no_tilt:
+        settings["tilt"]["enabled"] = False
+    if args.no_camera:
+        settings["camera"]["enabled"] = False
     if args.no_lcd:
         settings["lcd"]["enabled"] = False
     if args.no_dashboard:
@@ -76,14 +84,17 @@ def main(argv=None) -> int:
 
     if args.prepare_hardware:
         from .servo import prepare_hardware
-        return prepare_hardware(settings["servo"], args.group)
+        return prepare_hardware([settings["servo"], settings["tilt"]], args.group)
     if args.check:
         from .check import run
         return run(settings)
     if args.servo_test:
-        from .servo import ServoError, sweep
+        from .servo import ServoError, pan_positions, sweep
+        from .tilt import sweep_positions
+        cfg = settings["servo"] if args.servo_test == "pan" else settings["tilt"]
+        positions = pan_positions(cfg) if args.servo_test == "pan" else sweep_positions(cfg)
         try:
-            return sweep(settings["servo"])
+            return sweep(cfg, positions)
         except (ServoError, OSError) as exc:
             log.error("Servo test failed: %s", exc)
             return 1
@@ -100,6 +111,23 @@ def main(argv=None) -> int:
     else:
         state.set_module("servo", {"enabled": False})
 
+    hub = None
+    if settings["camera"]["enabled"]:
+        from .camera import CameraModule
+        from .vision import FrameHub
+        hub = FrameHub(settings["camera"], state)
+        workers.append(threading.Thread(target=CameraModule(settings["camera"], state, hub).run,
+                                        args=(stop,), name="camera"))
+    else:
+        state.set_module("camera", {"enabled": False})
+
+    if settings["tilt"]["enabled"]:
+        from .tilt import TiltController
+        workers.append(threading.Thread(target=TiltController(settings["tilt"], state, hub).run,
+                                        args=(stop,), name="tilt"))
+    else:
+        state.set_module("tilt", {"enabled": False})
+
     if settings["lcd"]["enabled"]:
         from .lcd import LcdModule
         workers.append(threading.Thread(target=LcdModule(settings["lcd"], state).run, args=(stop,), name="lcd"))
@@ -110,7 +138,7 @@ def main(argv=None) -> int:
     if settings["dashboard"]["enabled"]:
         from .web import DashboardServer
         try:
-            server = DashboardServer(settings["dashboard"], state, stop)
+            server = DashboardServer(settings["dashboard"], state, stop, hub)
         except OSError as exc:
             log.error("Cannot serve the dashboard on port %s: %s", settings["dashboard"]["port"], exc)
             return 1

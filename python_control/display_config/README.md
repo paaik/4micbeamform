@@ -16,11 +16,11 @@ Configuration and a small Python example to **show text** on the IPS SPI module.
 | CS           | CE0    | GPIO8 (CE0)        | **24**       |
 | DC           | D/C    | **GPIO25**         | **22**       |
 | RST          | Reset  | **GPIO27**         | **13**       |
-| BL           | Backlight | **GPIO12** | **32**       |
+| BL           | Backlight | **GPIO24** | **18**       |
 
 Use **3.3 V** logic (module has level shifting; still avoid 5 V on GPIO).
 
-**Backlight:** Waveshare’s wiki uses GPIO18 (phys 12). This repo defaults to **GPIO12** (phys 32) so **GPIO18** can stay on **I2S** (e.g. microphone BCLK). Connect the LCD **BL** lead to the Pi pin for your chosen BCM number and set `PIN_BL` in `config.py` to match.
+**Backlight:** Waveshare’s wiki uses GPIO18 (phys 12). This repo defaults to **GPIO24** (phys 18) so **GPIO18** can stay on **I2S** (e.g. microphone BCLK) and **GPIO12/13** stay free for the hardware-PWM tilt and pan servos. Connect the LCD **BL** lead to the Pi pin for your chosen BCM number and set `PIN_BL` in `config.py` to match.
 
 ## Enable SPI on Raspberry Pi OS
 
@@ -97,7 +97,7 @@ If the dashboard is down, the panel shows **Mics: UNKNOWN**.
 
 | Setting        | If something looks wrong |
 |----------------|---------------------------|
-| `Y_OFFSET`     | Image shifted up/down — try `0`, `20`, or `40` (ST7789 RAM is taller than the panel). |
+| `Y_OFFSET`     | `20` for this module (the panel shows ST7789 RAM rows 20–299). A band of random pixels at the bottom means it is `0`. |
 | `X_OFFSET`   | Rarely needed; try small values if columns are clipped. |
 | `ROTATION`   | `0`, `90`, `180`, or `270` if the panel is sideways. |
 | `SPI_BAUDRATE` | Flicker or garbage — lower to `32_000_000` or `16_000_000`. |

@@ -2,20 +2,30 @@
 
 One service that reads the XVF3800's beamformed azimuth and:
 
-- turns a TowerPro SG90 servo so its horn points at the sound,
-- shows the azimuth on the Waveshare 1.69" ST7789 LCD (`../display_config`),
-- serves the live 3D dashboard at `http://<pi>.local:8765/`.
+- turns a TowerPro SG90 pan servo so its horn points at the sound,
+- tilts a Camera v2 on a second SG90 (0° to 90°): it scans for a drone and
+  follows the one the PC detector finds,
+- streams the camera as MJPEG (`/camera.mjpg`) and accepts detections from
+  [`../drone_detector`](../drone_detector) (`POST /api/detections`),
+- shows the azimuth and camera elevation on the Waveshare 1.69" ST7789 LCD
+  (`../display_config`),
+- serves the live 3D dashboard, with the camera feed and detection boxes, at
+  `http://<pi>.local:8765/`.
 
-Each part runs on its own thread. If the LCD or servo is missing or fails, the
-others keep running and the dashboard shows the error.
+Each part runs on its own thread. If the LCD, a servo or the camera is missing
+or fails, the others keep running and the dashboard shows the error.
 
 ## Wiring (Raspberry Pi 5, physical header pins)
 
 | Device | Wire | Pi pin | Signal |
 |---|---|---|---|
-| SG90 servo | orange (signal) | **33** | GPIO13, hardware PWM0 channel 1 |
-| SG90 servo | brown (ground) | **34** | GND |
-| SG90 servo | red (+5 V) | **4** | 5 V (or an external 5 V supply, see below) |
+| Pan SG90 | orange (signal) | **33** | GPIO13, hardware PWM0 channel 1 |
+| Pan SG90 | brown (ground) | **34** | GND |
+| Pan SG90 | red (+5 V) | **4** | 5 V (or an external 5 V supply, see below) |
+| Tilt SG90 | orange (signal) | **32** | GPIO12, hardware PWM0 channel 0 |
+| Tilt SG90 | brown (ground) | **30** | GND |
+| Tilt SG90 | red (+5 V) | **2** | 5 V (or an external 5 V supply, see below) |
+| Camera v2 | ribbon | CAM/DISP 0 | Pi 5 22-to-15 pin camera cable |
 | LCD | VCC | 17 | 3.3 V |
 | LCD | GND | 20 | GND |
 | LCD | DIN | 19 | GPIO10 SPI0 MOSI |
@@ -23,20 +33,19 @@ others keep running and the dashboard shows the error.
 | LCD | CS | 24 | GPIO8 SPI0 CE0 |
 | LCD | DC | 22 | GPIO25 |
 | LCD | RST | 13 | GPIO27 |
-| LCD | BL | 32 | GPIO12 |
+| LCD | BL | 18 | GPIO24 |
 
-GPIO13 was picked for the servo because it is one of the four RP1 pins with a
-hardware PWM channel. The others are taken: GPIO12 drives the LCD backlight, and
-GPIO18 and GPIO19 are the I2S clocks. Hardware PWM keeps the 50 Hz pulse steady,
-so the SG90 does not twitch the way it does with software-timed pulses. Pin 34
-is the ground right next to the signal pin.
+GPIO12 and GPIO13 drive the servos because, of the four RP1 pins with a
+hardware PWM channel, GPIO18 and GPIO19 are the I2S clocks. Hardware PWM keeps
+the 50 Hz pulse steady, so the SG90s don't twitch the way they do with
+software-timed pulses. The LCD backlight only needs on/off, so it moved to
+GPIO24 to free GPIO12 for the tilt servo.
 
 **Servo power.** An SG90 draws a few hundred mA while moving and up to about
-700 mA when stalled. Pin 4 is fine with the official 27 W Pi 5 supply. If the Pi
-resets, the LCD flickers or USB audio drops out when the servo moves, power the
-red wire from a separate 5 V supply instead. Keep the brown wire tied to Pi
-ground (pin 34) so the signal has a shared reference. A 470 µF capacitor across
-the servo's 5 V and ground also helps.
+700 mA when stalled, and two of them can move at once. Pins 2 and 4 are fine
+for a quick test. For normal use, power both red wires from a separate 5 V
+supply whose ground is tied to Pi ground, so the signals have a shared
+reference. A 470 µF capacitor across the servos' 5 V and ground also helps.
 
 ### Connecting the reSpeaker
 
@@ -65,16 +74,21 @@ sudo reboot
 .venv/bin/python -m doa_tracker --check
 ```
 
-## Calibrate the servo
+## Calibrate the servos
 
-See step 7 of [`../deploy/README.md`](../deploy/README.md). In short:
+See step 7 of [`../deploy/README.md`](../deploy/README.md). For the tilt servo,
+`--servo-test tilt` sweeps the elevation range, `level_servo_deg` is the servo
+angle that holds the camera level, and `direction = -1` reverses it. For the
+pan servo:
 `--servo-test` sweeps the servo, `center_azimuth_deg` sets the azimuth the
-horn faces at servo 90°, and `direction = -1` reverses it. The dashboard's 0°
+horn faces at servo 90°, and `direction = -1` reverses it. With
+`out_of_range = "flip"`, the horn's rear end points at sounds the front end
+can't reach, which covers the full 360°. The dashboard's 0°
 mark is the array's +X axis, and angles increase toward +Y.
 
 ## Run on a PC (dashboard only)
 
 ```bash
 python doa_dashboard.py                      # Windows/macOS/Linux, opens a browser
-python -m doa_tracker --no-servo --no-lcd    # same thing with all options
+python -m doa_tracker --no-servo --no-tilt --no-camera --no-lcd    # same thing with all options
 ```

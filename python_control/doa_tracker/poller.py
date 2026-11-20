@@ -94,9 +94,18 @@ class SharedState:
             self._snapshot = dict(snapshot, seq=self._snapshot["seq"] + 1)
             self._cond.notify_all()
 
-    def set_module(self, name: str, status: dict) -> None:
+    def set_module(self, name: str, status: dict, notify: bool = False) -> None:
+        """Update one module's status; `notify` pushes it to the dashboard now instead of with the next poll."""
         with self._cond:
             self._modules[name] = status
+            if notify:
+                self._snapshot = dict(self._snapshot, seq=self._snapshot["seq"] + 1)
+                self._cond.notify_all()
+
+    def module(self, name: str):
+        with self._cond:
+            status = self._modules.get(name)
+            return None if status is None else dict(status)
 
     def latest(self) -> dict:
         with self._cond:

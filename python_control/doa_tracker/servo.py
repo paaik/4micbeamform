@@ -25,25 +25,45 @@ SYSFS_PWM = Path("/sys/class/pwm")
 CHANNEL_FILES = ("period", "duty_cycle", "enable", "polarity")
 UPDATE_HZ = 50.0
 REOPEN_S = 5.0
+FLIP_HYSTERESIS_DEG = 10.0
 
 
 class ServoError(Exception):
     pass
 
 
-def servo_angle_for(azimuth: float, servo: dict) -> float:
-    """Servo angle (0-180, 90 = centre) that points the horn at an array azimuth."""
-    relative = (azimuth - servo["center_azimuth_deg"] + 180.0) % 360.0 - 180.0
-    if abs(relative) > 90.0:
-        if servo["out_of_range"] == "mirror":
-            relative = math.copysign(180.0, relative) - relative
-        else:
-            relative = math.copysign(90.0, relative)
-    return 90.0 + servo["direction"] * relative
+def wrap180(degrees: float) -> float:
+    return (degrees + 180.0) % 360.0 - 180.0
 
 
-def pointing_azimuth(angle: float, servo: dict) -> float:
-    return (servo["center_azimuth_deg"] + (angle - 90.0) * servo["direction"]) % 360.0
+def aim(azimuth: float, servo: dict, rear: bool = False) -> tuple[float, bool]:
+    """Servo angle (0-180, 90 = centre) for an array azimuth, and whether the horn's rear end points at it.
+
+    `rear` is the end currently in use; "flip" mode only swaps ends once the
+    source is FLIP_HYSTERESIS_DEG past the reach of that end, so a source near
+    the edge doesn't make the horn swing back and forth.
+    """
+    relative = wrap180(azimuth - servo["center_azimuth_deg"])
+    mode = servo["out_of_range"]
+    if mode == "flip":
+        limit = 90.0 + FLIP_HYSTERESIS_DEG
+        if abs(wrap180(relative - 180.0) if rear else relative) > limit:
+            rear = not rear
+        if rear:
+            relative = wrap180(relative - 180.0)
+        relative = max(-90.0, min(90.0, relative))
+    else:
+        rear = False
+        if abs(relative) > 90.0:
+            if mode == "mirror":
+                relative = math.copysign(180.0, relative) - relative
+            else:
+                relative = math.copysign(90.0, relative)
+    return 90.0 + servo["direction"] * relative, rear
+
+
+def pointing_azimuth(angle: float, servo: dict, rear: bool = False) -> float:
+    return (servo["center_azimuth_deg"] + (angle - 90.0) * servo["direction"] + (180.0 if rear else 0.0)) % 360.0
 
 
 def pulse_us(angle: float, servo: dict) -> float:
@@ -154,37 +174,42 @@ def open_driver(servo: dict):
     return SoftwarePwm(servo["gpio"])
 
 
-def prepare_hardware(servo: dict, group: str) -> int:
-    """Run as root before the service starts: export the PWM channel and hand it to `group`."""
-    if not servo["enabled"] or servo["backend"] == "software":
-        return 0
-    channel = HW_PWM_CHANNELS.get(servo["gpio"])
-    chip = find_pwm_chip()
-    if channel is None or chip is None:
-        log.warning("Hardware PWM is not available for GPIO%d; the servo will use software pulses", servo["gpio"])
-        return 0
-    try:
-        path = export_channel(chip, channel)
-        for name in CHANNEL_FILES:
-            target = path / name
-            if target.exists():
-                shutil.chown(target, group=group)
-                os.chmod(target, 0o664)
-        log.info("Exported %s for group %s", path, group)
-    except (OSError, LookupError, ServoError) as exc:
-        log.warning("Could not prepare hardware PWM: %s", exc)
+def prepare_hardware(servos: list[dict], group: str) -> int:
+    """Run as root before the service starts: export each servo's PWM channel and hand it to `group`."""
+    for servo in servos:
+        if not servo["enabled"] or servo["backend"] == "software":
+            continue
+        channel = HW_PWM_CHANNELS.get(servo["gpio"])
+        chip = find_pwm_chip()
+        if channel is None or chip is None:
+            log.warning("Hardware PWM is not available for GPIO%d; it will use software pulses", servo["gpio"])
+            continue
+        try:
+            path = export_channel(chip, channel)
+            for name in CHANNEL_FILES:
+                target = path / name
+                if target.exists():
+                    shutil.chown(target, group=group)
+                    os.chmod(target, 0o664)
+            log.info("Exported %s for group %s", path, group)
+        except (OSError, LookupError, ServoError) as exc:
+            log.warning("Could not prepare hardware PWM for GPIO%d: %s", servo["gpio"], exc)
     return 0
 
 
-def sweep(servo: dict) -> int:
-    """Move to 90, 0, 90, 180, 90 degrees so the horn and pulse limits can be checked."""
+def pan_positions(servo: dict) -> list[tuple[float, str]]:
+    return [(angle, "points at azimuth {:5.1f}°".format(pointing_azimuth(angle, servo)))
+            for angle in (90, 0, 90, 180, 90)]
+
+
+def sweep(servo: dict, positions: list[tuple[float, str]]) -> int:
+    """Step through (servo angle, description) pairs so the horn and pulse limits can be checked."""
     driver = open_driver(servo)
     log.info("Servo on GPIO%d via %s", servo["gpio"], driver.name)
     try:
-        for angle in (90, 0, 90, 180, 90):
+        for angle, description in positions:
             width = pulse_us(angle, servo)
-            log.info("servo %3d°  pulse %4.0f us  points at azimuth %5.1f°",
-                     angle, width, pointing_azimuth(angle, servo))
+            log.info("servo %5.1f°  pulse %4.0f us  %s", angle, width, description)
             driver.pulse(width)
             time.sleep(1.5)
     finally:
@@ -199,6 +224,7 @@ class ServoController:
         self.driver = None
         self.angle = 90.0
         self.target = 90.0
+        self.rear = False
         self.holding = False
         self.last_move = 0.0
         self.last_attempt = -math.inf
@@ -234,9 +260,9 @@ class ServoController:
     def _step(self, elapsed: float) -> None:
         tracked = self.state.latest().get("tracked_deg")
         if tracked is not None:
-            goal = servo_angle_for(tracked, self.cfg)
-            if abs(goal - self.target) >= self.cfg["deadband_deg"]:
-                self.target = goal
+            goal, rear = aim(tracked, self.cfg, self.rear)
+            if rear != self.rear or abs(goal - self.target) >= self.cfg["deadband_deg"]:
+                self.target, self.rear = goal, rear
         if self.driver is None:
             return
         delta = self.target - self.angle
@@ -282,7 +308,8 @@ class ServoController:
             "backend": None if self.driver is None else self.driver.name,
             "angle_deg": round(self.angle, 1),
             "target_deg": round(self.target, 1),
-            "pointing_deg": round(pointing_azimuth(self.angle, self.cfg), 1),
+            "pointing_deg": round(pointing_azimuth(self.angle, self.cfg, self.rear), 1),
+            "end": "rear" if self.rear else "front",
             "holding": self.holding,
             "error": self.error,
         })

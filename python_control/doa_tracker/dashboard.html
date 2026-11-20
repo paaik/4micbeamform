@@ -73,6 +73,29 @@
   #legend i {
     display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px;
   }
+  #camera {
+    position: absolute; top: 14px; right: 14px;
+    width: min(44%, 520px);
+    background: rgba(16, 19, 24, 0.9);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: zoom-in;
+  }
+  #camera.big { width: calc(100% - 28px); cursor: zoom-out; }
+  #camera .frame { position: relative; aspect-ratio: 4 / 3; background: #000; }
+  #camera img, #camera canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  #camera .cam-bar {
+    display: flex; justify-content: space-between; gap: 10px;
+    padding: 6px 10px; font-size: 11px; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  #cam-mode.track { color: var(--ok); font-weight: 650; }
+  #cam-empty {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    color: var(--muted); font-size: 12px; text-align: center; padding: 12px;
+  }
+  #cam-empty[hidden] { display: none; }
   aside {
     border-left: 1px solid var(--line);
     background: var(--panel);
@@ -143,7 +166,7 @@
 <header>
   <div>
     <h1>DIRECTION OF ARRIVAL</h1>
-    <p>Tracked XVF3800 azimuth on the array plane. Vertical axis is time; the white needle is the servo.</p>
+    <p>Tracked XVF3800 azimuth on the array plane. Vertical axis is time; the white needle is the pan servo, the cyan ray the camera.</p>
   </div>
   <div id="status"><span id="dot"></span><span id="status-text">Connecting</span></div>
 </header>
@@ -154,10 +177,19 @@
     <div id="legend">
       <span><i style="background:#ffb020"></i>Tracked</span>
       <span><i style="background:#f2f5fa"></i>Servo</span>
+      <span><i style="background:#5ee6f2"></i>Camera</span>
       <span><i style="background:#5ec8ff"></i>Beam 1</span>
       <span><i style="background:#7d8cff"></i>Beam 2</span>
       <span><i style="background:#c084fc"></i>Free-running</span>
       <span><i style="background:#3dd68c"></i>Auto-select</span>
+    </div>
+    <div id="camera" hidden title="Click to enlarge">
+      <div class="frame">
+        <img id="cam-img" alt="Live camera">
+        <canvas id="cam-boxes"></canvas>
+        <div id="cam-empty">Waiting for the camera</div>
+      </div>
+      <div class="cam-bar"><span id="cam-mode">—</span><span id="cam-info">—</span></div>
     </div>
   </div>
   <aside>
@@ -177,7 +209,19 @@
       <tr><td>Servo</td><td id="servo-state">—</td></tr>
       <tr><td>Servo angle</td><td id="servo-angle">—</td></tr>
       <tr><td>Servo points at</td><td id="servo-pointing">—</td></tr>
+      <tr><td>Tilt servo</td><td id="tilt-state">—</td></tr>
+      <tr><td>Camera elevation</td><td id="tilt-elevation">—</td></tr>
+      <tr><td>Camera</td><td id="camera-state">—</td></tr>
       <tr><td>LCD</td><td id="lcd-state">—</td></tr>
+    </table>
+
+    <h2>Drone (camera)</h2>
+    <table>
+      <tr><td>Detector</td><td id="det-state">—</td></tr>
+      <tr><td>Detections</td><td id="det-count">—</td></tr>
+      <tr><td>Locked on</td><td id="det-lock">—</td></tr>
+      <tr><td>Drone elevation</td><td id="det-elevation">—</td></tr>
+      <tr><td>Drone azimuth (camera)</td><td id="det-azimuth">—</td></tr>
     </table>
 
     <h2>Beams</h2>
@@ -277,12 +321,113 @@ function applyModules(sample) {
   document.getElementById("servo-state").textContent = moduleText(servo, servoReady);
   const active = servo && servo.enabled !== false;
   document.getElementById("servo-angle").textContent = active ? fmtDeg(servo.angle_deg) : "—";
-  document.getElementById("servo-pointing").textContent = active ? fmtDeg(servo.pointing_deg) : "—";
+  document.getElementById("servo-pointing").textContent = active
+    ? fmtDeg(servo.pointing_deg) + (servo.end === "rear" ? " (rear end)" : "") : "—";
   const lcd = modules.lcd;
   document.getElementById("lcd-state").textContent = moduleText(lcd, lcd && lcd.ready ? "Showing azimuth" : "Starting");
+
+  const tilt = modules.tilt;
+  document.getElementById("tilt-state").textContent =
+    moduleText(tilt, tilt && tilt.backend ? "GPIO" + tilt.gpio + " · " + tilt.backend : "Starting");
+  document.getElementById("tilt-elevation").textContent = tilt && tilt.backend
+    ? fmtDeg(tilt.elevation_deg) + (tilt.mode === "track" ? " · locked" : " · scanning") : "—";
+  const camera = modules.camera;
+  document.getElementById("camera-state").textContent = moduleText(camera, camera && camera.ready
+    ? camera.model + " · " + camera.width + "×" + camera.height + " · " + camera.fps + " fps" : "Starting");
+  applyVision(modules, servo);
 }
 
+function applyVision(modules, servo) {
+  const camera = modules.camera;
+  const vision = modules.vision || {};
+  const tilt = modules.tilt || {};
+  const online = !!vision.detector_online;
+  const detections = online ? (vision.detections || []) : [];
+  const lock = tilt.mode === "track" ? tilt.lock : null;
+  const behind = servo && servo.end === "rear";
+
+  document.getElementById("det-state").textContent = !camera || camera.enabled === false ? "Camera off"
+    : online ? (vision.model || "detector") + " · " + vision.detector_fps + " fps"
+      + (vision.inference_ms ? " · " + Math.round(vision.inference_ms) + " ms" : "")
+    : (vision.client ? "Offline (last " + vision.client + ")" : "Not connected");
+  document.getElementById("det-count").textContent = online ? String(detections.length) : "—";
+  document.getElementById("det-lock").textContent = lock
+    ? lock.label + " " + Math.round(lock.confidence * 100) + "%" : (behind ? "Sound is behind the camera" : "—");
+  document.getElementById("det-elevation").textContent = lock ? fmtDeg(lock.elevation_deg) : "—";
+  document.getElementById("det-azimuth").textContent = lock ? fmtDeg(lock.azimuth_deg) : "—";
+
+  const panel = document.getElementById("camera");
+  if (!camera || camera.enabled === false) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  if (camera.width && camera.height) {
+    panel.querySelector(".frame").style.aspectRatio = camera.width + " / " + camera.height;
+  }
+  const img = document.getElementById("cam-img");
+  if (camera.ready && !img.getAttribute("src")) img.src = "/camera.mjpg?t=" + Date.now();
+  document.getElementById("cam-empty").hidden = camera.ready && img.complete !== false && img.naturalWidth > 0;
+  if (!camera.ready) document.getElementById("cam-empty").textContent = camera.error || "Waiting for the camera";
+
+  const mode = document.getElementById("cam-mode");
+  mode.className = tilt.mode === "track" ? "track" : "";
+  mode.textContent = !tilt.backend ? "Tilt off"
+    : (tilt.mode === "track" ? "LOCKED" : "SCANNING") + " · el " + fmtDeg(tilt.elevation_deg);
+  document.getElementById("cam-info").textContent = online
+    ? detections.length + " detected · " + vision.detector_fps + " fps"
+    : "detector offline";
+  drawBoxes(detections);
+}
+
+function drawBoxes(detections) {
+  const canvas = document.getElementById("cam-boxes");
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+  const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, width, height);
+  ctx.lineWidth = 2 * dpr;
+  ctx.font = (11 * dpr) + "px Segoe UI, sans-serif";
+  detections.forEach((det, index) => {
+    const [x1, y1, x2, y2] = det.box;
+    const color = index === 0 ? "#3dd68c" : "#ffb020";
+    ctx.strokeStyle = color;
+    ctx.strokeRect(x1 * width, y1 * height, (x2 - x1) * width, (y2 - y1) * height);
+    let label = det.label + " " + Math.round(det.confidence * 100) + "%";
+    if (det.elevation_deg !== null && det.elevation_deg !== undefined) label += " · el " + det.elevation_deg.toFixed(1) + "°";
+    const textWidth = ctx.measureText(label).width + 8 * dpr;
+    const top = Math.max(0, y1 * height - 16 * dpr);
+    ctx.fillStyle = color;
+    ctx.fillRect(x1 * width, top, textWidth, 16 * dpr);
+    ctx.fillStyle = "#0d1016";
+    ctx.fillText(label, x1 * width + 4 * dpr, top + 12 * dpr);
+  });
+}
+
+document.getElementById("camera").addEventListener("click", (event) => {
+  event.currentTarget.classList.toggle("big");
+});
+document.getElementById("cam-img").addEventListener("load", () => {
+  document.getElementById("cam-empty").hidden = true;
+});
+document.getElementById("cam-img").addEventListener("error", (event) => {
+  const img = event.currentTarget;
+  document.getElementById("cam-empty").hidden = false;
+  document.getElementById("cam-empty").textContent = "Camera stream lost; reconnecting";
+  setTimeout(() => { img.src = "/camera.mjpg?t=" + Date.now(); }, 2000);
+});
+
 function applySample(sample) {
+  if (latest && sample.t === latest.t && sample.ok === latest.ok) {
+    latest = sample;
+    applyModules(sample);
+    return;
+  }
   latest = sample;
   const dot = document.getElementById("dot");
   const status = document.getElementById("status-text");
@@ -630,6 +775,23 @@ if (!gl) {
       push(grid, base[0], base[1], base[2], white, 1);
       push(grid, tip[0], tip[1], tip[2], white, 1);
       push(points, tip[0], tip[1], tip[2], white, 9);
+
+      const tilt = latest.modules.tilt;
+      if (tilt && tilt.backend && servo.end !== "rear") {
+        const el = tilt.elevation_deg * Math.PI / 180;
+        const cyan = [0.37, 0.9, 0.95, 0.95];
+        const ray = dir(theta, 0.7 * Math.cos(el), 0.09 + 0.7 * Math.sin(el));
+        push(grid, base[0], base[1], base[2], cyan, 1);
+        push(grid, ray[0], ray[1], ray[2], cyan, 1);
+        push(points, ray[0], ray[1], ray[2], cyan, 7);
+        const lock = tilt.mode === "track" ? tilt.lock : null;
+        if (lock && lock.azimuth_deg !== null && lock.elevation_deg !== null) {
+          const la = lock.azimuth_deg * Math.PI / 180 + shift;
+          const le = lock.elevation_deg * Math.PI / 180;
+          const p = dir(la, 0.8 * Math.cos(le), 0.09 + 0.8 * Math.sin(le));
+          push(points, p[0], p[1], p[2], [0.24, 0.84, 0.55, 1], 14);
+        }
+      }
     }
 
     const now = latest && latest.ok ? latest.t : 0;

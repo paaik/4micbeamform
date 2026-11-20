@@ -73,8 +73,19 @@ def frame_key(snapshot: dict):
         bool(snapshot.get("speech")),
         bool(snapshot.get("tracking_live")),
         None if pointing is None else round(pointing) % 360,
+        servo.get("end"),
+        elevation_text(snapshot),
         (snapshot.get("error") or "")[:30],
     )
+
+
+def elevation_text(snapshot: dict):
+    """("EL 45° LOCK", tracking?) for the tilt servo, or None when it isn't running."""
+    tilt = snapshot.get("modules", {}).get("tilt") or {}
+    if not tilt.get("backend"):
+        return None
+    tracking = tilt.get("mode") == "track"
+    return "EL {:.0f}° {}".format(tilt.get("elevation_deg", 0), "LOCK" if tracking else "SCAN"), tracking
 
 
 def render(snapshot: dict, width: int, height: int, fonts: dict):
@@ -91,6 +102,11 @@ def render(snapshot: dict, width: int, height: int, fonts: dict):
     draw.text((14, 10), "AZIMUTH", font=fonts["small"], fill=MUTED)
     status = BAD if not ok else (SPEECH if speech else OK)
     draw.ellipse((width - 26, 12, width - 12, 26), fill=status)
+    elevation = elevation_text(snapshot)
+    if elevation is not None:
+        text, tracking = elevation
+        left, _, right, _ = draw.textbbox((0, 0), text, font=fonts["small"])
+        draw.text((width - 36 - (right - left), 10), text, font=fonts["small"], fill=OK if tracking else MUTED)
 
     cx, cy, radius = width // 2, 122, 78
     draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=GRID, width=2)
@@ -124,7 +140,8 @@ def render(snapshot: dict, width: int, height: int, fonts: dict):
     else:
         parts = ["speech" if speech else "quiet"]
         if servo.get("backend"):
-            parts.append("servo {:.0f}°".format(servo.get("angle_deg", 0)))
+            parts.append("servo {:.0f}°{}".format(servo.get("angle_deg", 0),
+                                                  " rear" if servo.get("end") == "rear" else ""))
         footer, color = "  ·  ".join(parts), MUTED
     centered_text(draw, cx, height - 22, footer, fonts["small"], color)
     return image

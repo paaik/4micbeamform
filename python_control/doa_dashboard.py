@@ -21,7 +21,7 @@ if __name__ == "__main__":
     parser.add_argument("--hz", type=float, default=20.0, help="control poll rate")
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
-    argv = ["--no-servo", "--no-lcd", "--host", args.host, "--port", str(args.port), "--poll-hz", str(args.hz)]
+    argv = ["--no-servo", "--no-tilt", "--no-camera", "--no-lcd", "--host", args.host, "--port", str(args.port), "--poll-hz", str(args.hz)]
     if not args.no_browser:
         argv.append("--open-browser")
     sys.exit(main(argv))

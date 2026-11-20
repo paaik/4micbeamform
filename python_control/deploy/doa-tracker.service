@@ -1,15 +1,15 @@
 [Unit]
-Description=reSpeaker XVF3800 direction tracker (servo, LCD, web dashboard)
+Description=reSpeaker XVF3800 direction tracker (pan/tilt servos, camera, LCD, web dashboard)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=@USER@
-SupplementaryGroups=gpio spi i2c plugdev
+SupplementaryGroups=gpio spi i2c plugdev video
 WorkingDirectory=@APP_DIR@
 Environment=PYTHONUNBUFFERED=1
-# "+" runs this one step as root: it exports the servo PWM channel and hands it to the gpio group.
+# "+" runs this one step as root: it exports the servo PWM channels and hands them to the gpio group.
 ExecStartPre=+@APP_DIR@/.venv/bin/python -m doa_tracker --config @APP_DIR@/doa_tracker.toml --prepare-hardware --group gpio
 ExecStart=@APP_DIR@/.venv/bin/python -m doa_tracker --config @APP_DIR@/doa_tracker.toml
 Restart=on-failure

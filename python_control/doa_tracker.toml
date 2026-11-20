@@ -39,7 +39,44 @@ min_pulse_us = 500         # pulse for servo 0 degrees; raise it if the SG90 buz
 max_pulse_us = 2400        # pulse for servo 180 degrees; lower it if the SG90 buzzes at the end stop
 center_azimuth_deg = 0.0   # array azimuth the horn faces at servo 90 degrees
 direction = 1              # -1 if the horn turns away from the sound
-out_of_range = "clamp"     # sounds behind the servo: "clamp" to the nearest end, or "mirror" across it
+# Sounds behind the servo (the SG90 only turns 180 degrees):
+# "flip"   - turn so the horn's rear end points at them; LCD and dashboard say which end (full 360)
+# "clamp"  - hold the horn at the nearest end stop
+# "mirror" - point at the same angle reflected to the front
+out_of_range = "flip"
 deadband_deg = 3.0         # ignore heading changes smaller than this
 max_speed_dps = 300.0      # slew limit, degrees per second
 release_after_s = 2.0      # stop pulses after this long still (quiet, no buzz); 0 holds torque
+
+[tilt]
+# Second SG90 on the pan-tilt kit: tilts the camera 0-90 degrees to find and follow a drone.
+# It scans scan_elevations until the off-Pi detector reports a drone, then follows the drone's
+# elevation, and goes back to scanning after lost_after_s without a detection.
+enabled = true
+gpio = 12                  # header pin 32; RP1 hardware PWM0 channel 0
+backend = "auto"
+min_pulse_us = 500
+max_pulse_us = 2400
+level_servo_deg = 90.0     # servo angle where the camera looks level (elevation 0)
+direction = 1              # -1 if a bigger servo angle tilts the camera down
+min_elevation_deg = 0.0
+max_elevation_deg = 90.0
+scan_elevations = [15.0, 45.0, 75.0]   # the camera sees ~49 degrees vertically, so these overlap
+scan_dwell_s = 1.0         # pause at each scan position for sharp frames; 0 sweeps continuously
+scan_speed_dps = 60.0      # tilt speed while scanning
+max_speed_dps = 120.0      # tilt speed while following a drone
+deadband_deg = 1.5         # ignore elevation changes smaller than this while following
+min_confidence = 0.4       # detector confidence needed to lock on
+lost_after_s = 2.0         # go back to scanning after this long without a detection
+
+[camera]
+# Raspberry Pi Camera v2 (IMX219), streamed as MJPEG at http://<pi>:8765/camera.mjpg
+enabled = true
+width = 1280
+height = 960               # keep 4:3 so the picture uses the sensor's full field of view
+fps = 15
+jpeg_quality = 75          # lower width/height/quality if the stream stutters over Wi-Fi
+hflip = false              # set both flips to true if the camera is mounted upside down
+vflip = false
+hfov_deg = 62.2            # IMX219 field of view, used to turn box positions into angles
+vfov_deg = 48.8

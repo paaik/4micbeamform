@@ -39,31 +39,54 @@ def run(settings: dict) -> int:
     else:
         line(None, "lcd", "disabled")
 
-    servo = settings["servo"]
-    if not servo["enabled"]:
-        line(None, "servo", "disabled")
-        return 1 if failed else 0
+    if settings["camera"]["enabled"]:
+        ok, detail = check_camera()
+        failed |= not ok
+        line(ok, "camera", detail)
+    else:
+        line(None, "camera", "disabled")
+
+    for label, key in (("pan servo", "servo"), ("tilt servo", "tilt")):
+        if settings[key]["enabled"]:
+            failed |= not check_servo(label, settings[key])
+        else:
+            line(None, label, "disabled")
+    return 1 if failed else 0
+
+
+def check_camera() -> tuple[bool, str]:
+    try:
+        from picamera2 import Picamera2
+    except ImportError:
+        return False, "picamera2 missing (sudo apt install python3-picamera2)"
+    cameras = Picamera2.global_camera_info()
+    if not cameras:
+        return False, "no camera found; check the ribbon cable (Pi 5 needs a 22-to-15 pin cable)"
+    return True, ", ".join("{} on {}".format(c.get("Model"), c.get("Location", c.get("Id"))) for c in cameras)
+
+
+def check_servo(label: str, servo: dict) -> bool:
     gpio = servo["gpio"]
     chip = servo_mod.find_pwm_chip()
     channel = servo_mod.HW_PWM_CHANNELS.get(gpio)
     if chip is None or channel is None:
         try:
             import lgpio  # noqa: F401
-            fallback = servo["backend"] != "hardware"
+            ok = servo["backend"] != "hardware"
         except ImportError:
-            fallback = False
+            ok = False
         detail = "no hardware PWM for GPIO{}".format(gpio)
-        line(fallback, "servo", detail + ("; lgpio software pulses will be used" if fallback else
-                                          "; add dtoverlay=pwm,pin={},func=4 (lgpio fallback unavailable)".format(gpio)))
-        failed |= not fallback
+        line(ok, label, detail + ("; lgpio software pulses will be used" if ok else
+                                  "; enable the pwm overlay (lgpio fallback unavailable)"))
     else:
         path = chip / "pwm{}".format(channel)
         writable = os.access(path / "duty_cycle", os.W_OK)
-        line(writable or os.geteuid() == 0, "servo",
+        ok = writable or os.geteuid() == 0
+        line(ok, label,
              "GPIO{} -> {} ({})".format(gpio, path, "writable" if writable else "not exported for this user yet"))
     try:
         mux = subprocess.run(["pinctrl", "get", str(gpio)], capture_output=True, text=True, timeout=3).stdout.strip()
         line("PWM0" in mux or None, "pin mux", mux or "pinctrl printed nothing")
     except (OSError, subprocess.SubprocessError):
         line(None, "pin mux", "pinctrl not available")
-    return 1 if failed else 0
+    return ok

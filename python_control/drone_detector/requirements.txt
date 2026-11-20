@@ -1,0 +1,6 @@
+# PC side only (Windows, macOS or Linux). For an NVIDIA GPU, install the CUDA build of
+# PyTorch first (https://pytorch.org/get-started/locally/), then these.
+ultralytics>=8.1
+opencv-python>=4.8
+numpy>=1.24
+requests>=2.28
